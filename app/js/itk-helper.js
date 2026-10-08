@@ -20,9 +20,25 @@
 (function () {
   'use strict';
 
-  if (window.__timeLoggerItk) {
-    window.__timeLoggerItk.toggle();
+  // Bump when the helper changes, so a newer favorite replaces an older copy
+  // still running in this tab instead of just showing it again.
+  const HELPER_VERSION = 3;
+
+  const existing = window.__timeLoggerItk;
+  if (existing && existing.version === HELPER_VERSION) {
+    existing.toggle();
     return;
+  }
+  if (existing) {
+    try {
+      if (existing.destroy) existing.destroy();
+      else {
+        // Versions before 3: hiding the panel also ends its teach mode.
+        const old = document.querySelector('[data-time-logger-helper]');
+        if (old && old.style.display !== 'none') existing.toggle();
+      }
+    } catch { /* ignore */ }
+    for (const el of document.querySelectorAll('[data-time-logger-helper]')) el.remove();
   }
 
   const CONFIG_KEY = 'timeLoggerItkHelper';
@@ -110,11 +126,12 @@
   // helper can work there too. (Only windows opened after the helper starts.)
   const popups = [];
   const realOpen = window.open;
-  window.open = function (...args) {
+  const watchOpen = function (...args) {
     const w = realOpen.apply(this, args);
     if (w) popups.unshift(w);
     return w;
   };
+  window.open = watchOpen;
 
   // Every document to search, newest window first, then frames, then this page.
   function docs() {
@@ -773,6 +790,7 @@
           },
         }, 'Forget everything')),
       h('div', { class: 'row' }, h('button', { class: 'secondary', onclick: () => { view = 'main'; render(); } }, 'Done')),
+      h('div', { class: 'muted' }, `Helper version ${HELPER_VERSION}`),
     ];
   }
 
@@ -886,6 +904,15 @@
     }
   }
 
-  window.__timeLoggerItk = { toggle: () => toggle() };
+  function destroy() {
+    if (view === 'teach') {
+      config = configBeforeTeach || config;
+      endTeach();
+    }
+    if (window.open === watchOpen) window.open = realOpen;
+    host.remove();
+  }
+
+  window.__timeLoggerItk = { version: HELPER_VERSION, toggle: () => toggle(), destroy };
   render();
 })();

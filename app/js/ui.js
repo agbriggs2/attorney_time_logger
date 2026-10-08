@@ -561,6 +561,11 @@ async function setupItkHelper() {
     const compact = src.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('//')).join('\n');
     helperCode = `javascript:${encodeURIComponent(`${compact}\nvoid 0;`)}`;
     $('itkLink').href = helperCode;
+    const v = /HELPER_VERSION = (\d+)/.exec(src);
+    if (v) {
+      $('itkVersion').textContent = `Current helper: version ${v[1]}. After an update, drag the button to the favorites bar again `
+        + '(replacing the old one), then click it in iTimeKeep. ⚙ in its panel shows which version is running.';
+    }
   } catch {
     $('itkLink').removeAttribute('href');
   }
