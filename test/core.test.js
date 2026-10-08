@@ -176,3 +176,17 @@ test('settings are validated', () => {
   assert.equal(state.settings.idleMinutes, 10);
   assert.deepEqual(state.settings.workDays, [1, 2, 3]);
 });
+
+test('iTimeKeep export uses combined lines and flags matters without a number', () => {
+  const { state, a, admin } = setup();
+  S.addEntry(state, { matterId: a.id, start: at('09:00'), end: at('09:04'), description: 'Call' }, at('12:00'));
+  S.addEntry(state, { matterId: a.id, start: at('10:00'), end: at('10:04'), description: 'Email' }, at('12:00'));
+  S.addEntry(state, { matterId: admin.id, start: at('11:00'), end: at('11:30') }, at('12:00'));
+  const { payload, missing } = R.itkExport(state, '2026-10-07', '2026-10-07');
+  assert.equal(payload.format, 'time-logger-itk');
+  assert.deepEqual(payload.entries, [{
+    date: '2026-10-07', client: 'Acme Corp', matter: 'Supply dispute', matterNumber: '1001',
+    hours: '0.2', narrative: 'Call; Email', billable: true,
+  }]);
+  assert.deepEqual(missing, ['Non-client — Administrative']);
+});

@@ -111,3 +111,31 @@ export function toCsv(state, fromKey, toKey, { combine = true } = {}) {
   return rows.map((r) => r.map(csvField).join(',')).join('\r\n') + '\r\n';
 }
 
+
+// Completed time between two day keys, shaped for the iTimeKeep helper.
+// Lines whose matter has no matter number can't be entered automatically and
+// are returned separately so the user can fix them.
+export function itkExport(state, fromKey, toKey, { combine = true } = {}) {
+  const entries = entriesBetween(state.entries, T.dayStart(fromKey), T.dayEnd(toKey)).filter((e) => e.end != null);
+  const lines = billingLines(state, entries, { combine });
+  const inc = state.settings.increment;
+  const out = [];
+  const missing = new Set();
+  for (const l of lines) {
+    const m = l.matter;
+    if (!m || !m.number) {
+      missing.add(matterLabel(m));
+      continue;
+    }
+    out.push({
+      date: l.date,
+      client: m.client,
+      matter: m.name,
+      matterNumber: m.number,
+      hours: T.formatHours(l.hours, inc),
+      narrative: l.description,
+      billable: l.billable,
+    });
+  }
+  return { payload: { format: 'time-logger-itk', version: 1, entries: out }, missing: [...missing] };
+}

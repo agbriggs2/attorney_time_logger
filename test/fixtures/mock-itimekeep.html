@@ -1,0 +1,111 @@
+<!doctype html>
+<!-- A stand-in for the iTimeKeep web portal, used to test the iTK helper.
+     It mimics what makes real single-page apps hard to automate:
+     - the form is rendered by script, with auto-generated element ids
+     - inputs behave like React-controlled inputs: setting .value directly is
+       ignored; only real typing (input events with a changed value) counts
+     - the matter box is a search-as-you-type list that appears after a delay
+     - a "recent entries" list elsewhere on the page also shows matter numbers
+     - choosing a matter resets the date to today
+     - Save counts clicks so tests can prove the helper never saves -->
+<html><head><meta charset="utf-8"><title>Mock iTimeKeep</title>
+<style>
+  body { font-family: sans-serif; margin: 20px; }
+  .field { margin: 10px 0; }
+  .field-label { font-size: 12px; color: #555; }
+  .result-list { border: 1px solid #ccc; list-style: none; padding: 0; margin: 0; max-width: 420px; }
+  .result-item { padding: 6px; cursor: pointer; }
+  .recent li { color: #777; }
+</style></head>
+<body>
+<div id="app">Loading…</div>
+<script>
+  const MATTERS = [
+    { id: 'm1', number: '2026-014', name: 'Acme Corp — Supply agreement dispute' },
+    { id: 'm2', number: '2025-210', name: 'Baker Family Trust — Estate administration' },
+    { id: 'm3', number: '2026-0140', name: 'Acme Corp — Unrelated lease' },
+    { id: 'm4', number: '90000-0001', name: 'Firm — Administrative' },
+  ];
+  const today = () => { const d = new Date(); return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`; };
+  window.__saves = 0; window.__saved = []; window.__model = null;
+  let uid = Math.floor(Math.random() * 9000) + 1000;
+
+  // React-style controlled input: tracks the last value it set itself, and
+  // ignores input events whose value didn't change from that.
+  function controlled(el, onChange) {
+    const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
+    let tracked = '';
+    Object.defineProperty(el, 'value', {
+      configurable: true,
+      get() { return desc.get.call(this); },
+      set(v) { tracked = String(v); desc.set.call(this, v); },
+    });
+    el.addEventListener('input', () => {
+      if (el.value === tracked) return;
+      tracked = el.value;
+      onChange(el.value);
+    });
+    return { set(v) { el.value = v; } };
+  }
+
+  function field(label, input) {
+    const wrap = document.createElement('div'); wrap.className = 'field';
+    const l = document.createElement('div'); l.className = 'field-label'; l.textContent = label;
+    wrap.append(l, input); return wrap;
+  }
+
+  function renderShell() {
+    const app = document.getElementById('app');
+    app.innerHTML = '';
+    const bar = document.createElement('div');
+    const newBtn = document.createElement('button'); newBtn.textContent = 'New Time Entry'; newBtn.id = 'btn_' + (uid++);
+    newBtn.addEventListener('click', renderForm);
+    bar.append(newBtn);
+    const recent = document.createElement('ul'); recent.className = 'recent';
+    recent.innerHTML = '<li class="result-item">Yesterday · 2026-014 · 1.2</li><li class="result-item">Yesterday · 2025-210 · 0.4</li>';
+    recent.querySelectorAll('li').forEach((li) => li.addEventListener('click', () => { window.__openedRecent = true; }));
+    const form = document.createElement('div'); form.id = 'formHost';
+    app.append(bar, form, document.createTextNode('Recent entries'), recent);
+  }
+
+  function renderForm() {
+    const model = { date: today(), matter: null, hours: '', narrative: '' };
+    window.__model = model;
+    const host = document.getElementById('formHost');
+    host.innerHTML = '';
+    const date = document.createElement('input'); date.id = 'input_' + (uid++); date.placeholder = 'MM/DD/YYYY';
+    const dateCtl = controlled(date, (v) => { model.date = v; }); dateCtl.set(model.date);
+    const matter = document.createElement('input'); matter.id = 'input_' + (uid++); matter.setAttribute('role', 'combobox');
+    const list = document.createElement('ul'); list.className = 'result-list'; list.hidden = true;
+    const matterCtl = controlled(matter, (v) => {
+      model.matter = null;
+      clearTimeout(matter._t);
+      matter._t = setTimeout(() => {
+        list.innerHTML = '';
+        const q = v.trim();
+        if (q.length < 3) { list.hidden = true; return; }
+        for (const m of MATTERS.filter((x) => x.number.includes(q) || x.name.toLowerCase().includes(q.toLowerCase()))) {
+          const li = document.createElement('li'); li.className = 'result-item'; li.setAttribute('role', 'option');
+          li.innerHTML = `<b>${m.number}</b> <span>${m.name}</span>`;
+          li.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            model.matter = m.id; matterCtl.set(`${m.number} ${m.name}`); list.hidden = true;
+            model.date = today(); dateCtl.set(model.date); // like iTK reloading defaults
+          });
+          list.append(li);
+        }
+        list.hidden = !list.children.length;
+      }, 250);
+    });
+    const hours = document.createElement('input'); hours.id = 'input_' + (uid++);
+    controlled(hours, (v) => { model.hours = v; });
+    const narrative = document.createElement('textarea'); narrative.id = 'input_' + (uid++);
+    controlled(narrative, (v) => { model.narrative = v; });
+    const save = document.createElement('button'); save.textContent = 'Save';
+    save.addEventListener('click', () => { window.__saves++; window.__saved.push({ ...model }); host.innerHTML = '<p>Saved.</p>'; });
+    host.append(field('Date', date), field('Client/Matter', matter), list, field('Hours', hours), field('Narrative', narrative), save);
+  }
+
+  setTimeout(renderShell, 300);
+</script>
+</body></html>

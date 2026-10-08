@@ -35,6 +35,30 @@ The Export tab downloads a CSV (Date, Client, Matter, Matter Number, Billable,
 Hours, Minutes, Description) for any date range. Open it in Excel or import it
 into your billing software. A running timer isn't exported until you stop it.
 
+### Entering time in iTimeKeep
+A helper fills iTimeKeep's time entry form for you, one entry at a time. It
+never saves anything; you check each entry and click iTK's own **Save**.
+
+1. **One-time setup:** on the Export tab, open **Enter this time in iTimeKeep**
+   and drag the **TL → iTimeKeep** button to your Edge favorites bar. Make sure
+   each matter on the Matters tab has its iTK matter number.
+2. Choose the dates and click **Copy for iTimeKeep**.
+3. In iTimeKeep, open a new time entry and click the **TL → iTimeKeep**
+   favorite. Paste into the panel that appears.
+4. **The first time only,** the panel asks you to click iTK's New Time Entry
+   button and its Date, Matter, Hours and Narrative fields, so it learns where
+   they are.
+5. For each entry, click **Fill in iTimeKeep**. The helper types the date,
+   searches for the matter number and picks it from iTK's list, then fills in
+   hours and narrative. Check the entry, click **Save** in iTK, then click
+   **I saved it → next**.
+
+The helper works through your normal logged-in iTK session and your own
+clicks. It doesn't get around any iTK restrictions, and it can't fill a field
+iTK has locked; it tells you which fields to finish yourself. If a later iTK
+update moves things around, use ⚙ → **Re-teach fields**. Entries reach iTK
+only through your clipboard.
+
 ## First-time setup in Edge (about 2 minutes)
 
 1. Open the app's address: **https://agbriggs2.github.io/attorney_time_logger/**
@@ -84,8 +108,9 @@ Every push runs the tests. A push to the default branch also publishes the
 
 ```
 app/core/       Pure logic, unit-tested: timer operations, rounding, gap detection, CSV
-app/js/         Browser code: engine (reminders, idle detection), storage, UI, mini timer
+app/js/         Browser code: engine (reminders, idle detection), storage, UI, mini timer,
+                and itk-helper.js (the iTimeKeep bookmarklet)
 app/sw.js       Offline cache of the app's files (not your data)
-test/           node:test unit tests
+test/           node:test unit tests; fixtures/mock-itimekeep.html for testing the iTK helper
 docs/DESIGN.md  Design notes and roadmap
 ```

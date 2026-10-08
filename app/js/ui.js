@@ -529,6 +529,43 @@ function onExport() {
   toast(`Downloaded ${name}`);
 }
 
+// --- iTimeKeep helper -----------------------------------------------------------------
+
+async function onCopyItk() {
+  const from = $('expFrom').value;
+  const to = $('expTo').value;
+  if (!from || !to || from > to) return toast('Choose a valid date range.', true);
+  const { payload, missing } = R.itkExport(state, from, to, { combine: $('expCombine').checked });
+  if (!payload.entries.length && !missing.length) return toast('No completed time in this range.', true);
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(payload));
+  } catch {
+    return toast("Couldn't copy to the clipboard. Click the page and try again.", true);
+  }
+  const n = payload.entries.length;
+  const msg = `Copied ${n} entr${n === 1 ? 'y' : 'ies'} for iTimeKeep.`;
+  if (missing.length) {
+    toast(`${msg} Skipped time on ${missing.join(', ')}: add the iTK matter number on the Matters tab.`, true);
+  } else {
+    toast(`${msg} Now click the TL → iTimeKeep favorite in iTimeKeep and paste.`);
+  }
+}
+
+// The helper is a bookmarklet: the script itself, packed into a javascript: link.
+let helperCode = '';
+
+async function setupItkHelper() {
+  try {
+    const res = await fetch('js/itk-helper.js', { cache: 'no-cache' });
+    const src = await res.text();
+    const compact = src.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('//')).join('\n');
+    helperCode = `javascript:${encodeURIComponent(`${compact}\nvoid 0;`)}`;
+    $('itkLink').href = helperCode;
+  } catch {
+    $('itkLink').removeAttribute('href');
+  }
+}
+
 // --- Settings tab -----------------------------------------------------------------
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -918,6 +955,19 @@ function wireEvents() {
   $('expTo').addEventListener('change', renderExport);
   $('expCombine').addEventListener('change', renderExport);
   $('expSave').addEventListener('click', onExport);
+  $('expItk').addEventListener('click', onCopyItk);
+  $('itkLink').addEventListener('click', (e) => {
+    e.preventDefault();
+    toast('Drag this button onto your favorites bar, then click it while you are in iTimeKeep.');
+  });
+  $('itkCopyCode').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(helperCode);
+      toast('Helper copied. Paste it as the URL of a new favorite.');
+    } catch {
+      toast("Couldn't copy to the clipboard.", true);
+    }
+  });
   $('settingsForm').addEventListener('submit', onSaveSettings);
   $('downloadBackup').addEventListener('click', onDownloadBackup);
   $('restoreBackup').addEventListener('click', () => $('restoreFile').click());
@@ -947,6 +997,7 @@ function onReady() {
   renderDay(true);
   storage.isPersisted().then((v) => { persisted = v; renderSetup(); });
   $('appVersion').textContent = `Time Logger version ${VERSION}`;
+  setupItkHelper();
   if (intervalsStarted) return;
   intervalsStarted = true;
   setInterval(() => { if (ready) updateElapsed(); }, 1000);
