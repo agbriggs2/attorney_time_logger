@@ -334,3 +334,4 @@ body.pip { margin: 0; padding: 8px; }
   overflow: hidden;
 }
 .pip-desc.empty { color: var(--muted); font-style: italic; }
+.small-print { font-size: 12px; margin: 10px 0 0; }

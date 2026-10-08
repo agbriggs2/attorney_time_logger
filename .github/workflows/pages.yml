@@ -35,6 +35,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      - name: Stamp the version shown in Settings
+        run: echo "export const VERSION = '$(date -u +%Y-%m-%d) (${GITHUB_SHA::7})';" > app/js/version.js
       - uses: actions/upload-pages-artifact@v3
         with:
           path: app

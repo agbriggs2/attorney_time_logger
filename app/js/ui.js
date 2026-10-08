@@ -5,6 +5,7 @@ import { engine, subscribe, dispatch, start, takeOver, notify, notifications,
 import * as storage from './storage.js';
 import { pip, openPip, renderPip } from './pip.js';
 import { h, fill } from './dom.js';
+import { VERSION } from './version.js';
 
 const FAILED = Symbol('failed');
 const GAP_MIN_MS = 5 * T.MINUTE;
@@ -135,7 +136,8 @@ function renderNow(force = false) {
     h('div', { class: 'now-fields' },
       h('input', {
         class: 'desc', type: 'text', value: r.description, placeholder: 'What are you working on? (becomes the bill narrative)',
-        onchange: (e) => act('updateEntry', { id: r.id, patch: { description: e.target.value } }),
+        oninput: (e) => saveNarrativeSoon(r.id, e.target.value),
+        onchange: (e) => saveNarrativeSoon(r.id, e.target.value, 0),
         onkeydown: (e) => { if (e.key === 'Enter') e.target.blur(); },
       }),
       h('label', { class: 'check muted' }, 'Started',
@@ -151,6 +153,19 @@ function renderNow(force = false) {
       h('button', { class: 'small', onclick: () => act('setRunningStart', { start: hint.start }) }, `Count it from ${clock(hint.start)}`)),
     resumeRow);
   updateElapsed();
+}
+
+// Save the narrative shortly after typing pauses, so the pop-out timer and
+// backups pick it up without having to press Enter or click away.
+let narrativeTimer = null;
+function saveNarrativeSoon(id, text, delay = 700) {
+  clearTimeout(narrativeTimer);
+  const save = () => {
+    const e = state.entries.find((x) => x.id === id);
+    if (e && e.description !== text.trim()) act('updateEntry', { id, patch: { description: text } });
+  };
+  if (delay) narrativeTimer = setTimeout(save, delay);
+  else save();
 }
 
 function popOutButton() {
@@ -931,6 +946,7 @@ function onReady() {
   renderNow(true);
   renderDay(true);
   storage.isPersisted().then((v) => { persisted = v; renderSetup(); });
+  $('appVersion').textContent = `Time Logger version ${VERSION}`;
   if (intervalsStarted) return;
   intervalsStarted = true;
   setInterval(() => { if (ready) updateElapsed(); }, 1000);
