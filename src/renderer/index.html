@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+  <title>Time Logger</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <header id="now" class="card now" aria-live="polite"></header>
+
+    <section class="card switcher">
+      <input id="search" type="search" placeholder="Switch to… type a client, matter, or matter number" autocomplete="off" spellcheck="false">
+      <div class="hint">
+        <kbd>Enter</kbd> start · <kbd>Shift</kbd>+<kbd>Enter</kbd> interrupt (come back after) ·
+        <span id="hotkeyHint"></span>
+      </div>
+      <ul id="matterList" class="matter-list"></ul>
+    </section>
+
+    <nav class="tabs" role="tablist">
+      <button data-tab="day" class="active">Day</button>
+      <button data-tab="matters">Matters</button>
+      <button data-tab="export">Export</button>
+      <button data-tab="settings">Settings</button>
+    </nav>
+
+    <section id="tab-day" class="tab">
+      <div class="day-head">
+        <button id="prevDay" class="icon" title="Previous day">‹</button>
+        <h2 id="dayLabel"></h2>
+        <button id="nextDay" class="icon" title="Next day">›</button>
+        <button id="todayBtn" class="secondary small">Today</button>
+        <div id="dayTotals" class="totals"></div>
+      </div>
+      <div id="timeline" class="timeline"></div>
+      <div id="dayList" class="day-list"></div>
+      <button id="addManual" class="secondary">+ Add time manually</button>
+    </section>
+
+    <section id="tab-matters" class="tab" hidden>
+      <form id="matterForm" class="card inline-form">
+        <h3>Add a matter</h3>
+        <input name="client" placeholder="Client (e.g. Acme Corp)">
+        <input name="name" placeholder="Matter (e.g. Lease dispute)" required>
+        <input name="number" placeholder="Matter #" class="narrow">
+        <label class="check"><input type="checkbox" name="billable" checked> Billable</label>
+        <button type="submit">Add</button>
+      </form>
+      <div class="matter-tools">
+        <input id="matterFilter" type="search" placeholder="Filter matters">
+        <label class="check"><input type="checkbox" id="showArchived"> Show archived</label>
+      </div>
+      <div id="matterTable"></div>
+    </section>
+
+    <section id="tab-export" class="tab" hidden>
+      <div class="card export-controls">
+        <div class="ranges">
+          <button class="secondary small" data-range="today">Today</button>
+          <button class="secondary small" data-range="week">This week</button>
+          <button class="secondary small" data-range="lastweek">Last week</button>
+          <button class="secondary small" data-range="month">This month</button>
+          <button class="secondary small" data-range="lastmonth">Last month</button>
+        </div>
+        <div class="row">
+          <label>From <input type="date" id="expFrom"></label>
+          <label>To <input type="date" id="expTo"></label>
+          <label class="check" title="Adds up all of a day's time on the same matter before rounding, so short interrupted stretches aren't each rounded up.">
+            <input type="checkbox" id="expCombine"> One line per matter per day
+          </label>
+          <button id="expSave">Save CSV…</button>
+        </div>
+        <div id="exportStatus" class="muted"></div>
+      </div>
+      <div id="exportPreview"></div>
+    </section>
+
+    <section id="tab-settings" class="tab" hidden>
+      <form id="settingsForm" class="card settings">
+        <h3>Reminders</h3>
+        <label>Treat me as away after <input type="number" name="idleMinutes" min="1" max="120"> minutes with no keyboard or mouse use</label>
+        <label class="check"><input type="checkbox" name="nudgeEnabled"> Remind me when I'm working with no timer running, every
+          <input type="number" name="nudgeMinutes" min="5" max="240"> minutes</label>
+        <label class="check"><input type="checkbox" name="reviewEnabled"> Prompt me to review my day when the workday ends</label>
+        <div class="row">
+          <label>Workday <input type="time" name="workStart"></label>
+          <label>to <input type="time" name="workEnd"></label>
+        </div>
+        <div class="row days" id="workDays"></div>
+
+        <h3>Billing</h3>
+        <label>Billing increment
+          <select name="increment">
+            <option value="0.1">0.1 hour (6 minutes)</option>
+            <option value="0.25">0.25 hour (15 minutes)</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" name="combineOnExport"> Combine a day's time on the same matter before rounding (day totals and export default)</label>
+
+        <h3>Shortcut</h3>
+        <label>Global hotkey to open the matter switcher <input name="hotkey" placeholder="Alt+Shift+T"></label>
+        <div id="hotkeyStatus" class="muted"></div>
+
+        <div class="row"><button type="submit">Save settings</button></div>
+
+        <h3>Your data</h3>
+        <p class="muted">Everything is stored only on this computer, with a daily backup kept for 30 days.</p>
+        <div class="row"><code id="dataDir"></code><button type="button" id="openData" class="secondary small">Open folder</button></div>
+      </form>
+    </section>
+  </div>
+
+  <div id="awayModal" class="modal" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="../core/time.js"></script>
+  <script src="../core/report.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
