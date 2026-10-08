@@ -21,7 +21,7 @@ export async function openPip(actFn) {
     pip.win.focus();
     return;
   }
-  const win = await window.documentPictureInPicture.requestWindow({ width: 360, height: 150 });
+  const win = await window.documentPictureInPicture.requestWindow({ width: 380, height: 190 });
   const link = win.document.createElement('link');
   link.rel = 'stylesheet';
   link.href = new URL('styles.css', location.href).href;
@@ -40,7 +40,7 @@ export function renderPip() {
   const state = engine.state;
   const r = running(state);
   const top = state.interruptStack[state.interruptStack.length - 1];
-  const key = JSON.stringify([r && [r.id, r.matterId], top && top.matterId, !!state.pendingAway,
+  const key = JSON.stringify([r && [r.id, r.matterId, r.description], top && top.matterId, !!state.pendingAway,
     state.matters.map((m) => [m.id, m.lastUsed, m.archived])]);
   const doc = win.document;
   if (key !== lastKey) {
@@ -59,6 +59,8 @@ export function renderPip() {
           h('span', { class: `dot ${r ? 'running' : 'stopped'}` }),
           h('span', { class: 'pip-matter', title: r ? R.matterLabel(m) : '' }, r ? R.matterLabel(m) : 'No timer running'),
           h('span', { class: 'pip-clock', id: 'pipClock' })),
+        r ? h('div', { class: `pip-desc${r.description ? '' : ' empty'}`, title: r.description || '' },
+          r.description || 'No narrative yet. Add one in Time Logger.') : null,
         state.pendingAway
           ? h('div', { class: 'pip-note' }, 'Welcome back. Open Time Logger to record your away time.')
           : null,

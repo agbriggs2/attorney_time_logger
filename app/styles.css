@@ -325,3 +325,12 @@ body.pip { margin: 0; padding: 8px; }
 }
 .now.stopped { border-left: 4px solid var(--danger); }
 .now.stopped .now-label { color: var(--danger); }
+.pip-desc {
+  font-size: 13px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pip-desc.empty { color: var(--muted); font-style: italic; }
