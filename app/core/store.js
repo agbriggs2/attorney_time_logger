@@ -1,13 +1,12 @@
 // The app state and every operation that changes it. Pure functions over a
-// plain object so they are easy to test; the main process persists the result.
-const crypto = require('crypto');
-const T = require('./time');
-const { matterLabel } = require('./report');
+// plain object so they are easy to test; the app persists the result.
+import * as T from './time.js';
+import { matterLabel } from './report.js';
 
-const MIN_ENTRY_MS = T.MINUTE; // stopped entries shorter than this (with no description) are dropped
+export const MIN_ENTRY_MS = T.MINUTE; // stopped entries shorter than this (with no description) are dropped
 const MAX_INTERRUPTS = 5;
 
-const DEFAULT_SETTINGS = {
+export const DEFAULT_SETTINGS = {
   increment: 0.1,
   idleMinutes: 5,
   nudgeEnabled: true,
@@ -17,14 +16,13 @@ const DEFAULT_SETTINGS = {
   workEnd: '18:00',
   workDays: [1, 2, 3, 4, 5],
   combineOnExport: true,
-  hotkey: 'Alt+Shift+T',
 };
 
 const DEFAULT_NON_CLIENT = ['Administrative', 'Business Development', 'CLE & Training', 'Pro Bono'];
 
-const newId = () => crypto.randomUUID();
+const newId = () => globalThis.crypto.randomUUID();
 
-function createState() {
+export function createState() {
   return {
     version: 1,
     matters: DEFAULT_NON_CLIENT.map((name) => ({
@@ -43,7 +41,7 @@ function createState() {
 }
 
 // Fill in anything missing from a state loaded off disk.
-function normalizeState(raw) {
+export function normalizeState(raw) {
   const fresh = createState();
   if (!raw || typeof raw !== 'object') return fresh;
   return {
@@ -57,8 +55,8 @@ function normalizeState(raw) {
   };
 }
 
-const running = (state) => state.entries.find((e) => e.end == null) || null;
-const getMatter = (state, id) => state.matters.find((m) => m.id === id) || null;
+export const running = (state) => state.entries.find((e) => e.end == null) || null;
+export const getMatter = (state, id) => state.matters.find((m) => m.id === id) || null;
 
 function requireMatter(state, id) {
   const m = getMatter(state, id);
@@ -114,14 +112,14 @@ function cleanMatterFields(p) {
   return out;
 }
 
-function addMatter(state, fields) {
+export function addMatter(state, fields) {
   const m = { id: newId(), client: '', name: '', number: '', billable: true, archived: false, lastUsed: 0, ...cleanMatterFields(fields) };
   if (!m.name) throw new Error('Give the matter a name.');
   state.matters.push(m);
   return m;
 }
 
-function updateMatter(state, id, patch) {
+export function updateMatter(state, id, patch) {
   const m = requireMatter(state, id);
   const next = { ...m, ...cleanMatterFields(patch) };
   if (!next.name) throw new Error('Give the matter a name.');
@@ -133,7 +131,7 @@ function updateMatter(state, id, patch) {
 
 // Start timing a matter. Any running timer stops. With `interrupt`, the
 // running matter is remembered so "Back to it" can resume it afterwards.
-function startTimer(state, matterId, now, { interrupt = false, description = '', start } = {}) {
+export function startTimer(state, matterId, now, { interrupt = false, description = '', start } = {}) {
   const m = requireMatter(state, matterId);
   const r = running(state);
   if (r && r.matterId === matterId) return r;
@@ -151,13 +149,13 @@ function startTimer(state, matterId, now, { interrupt = false, description = '',
   return entry;
 }
 
-function stopTimer(state, now) {
+export function stopTimer(state, now) {
   const r = running(state);
   if (r) finish(state, r, now);
   return r;
 }
 
-function resumePrevious(state, now) {
+export function resumePrevious(state, now) {
   while (state.interruptStack.length) {
     const prev = state.interruptStack.pop();
     if (getMatter(state, prev.matterId)) return startTimer(state, prev.matterId, now, { description: prev.description });
@@ -165,11 +163,11 @@ function resumePrevious(state, now) {
   return null;
 }
 
-function dismissResume(state) {
+export function dismissResume(state) {
   state.interruptStack.pop();
 }
 
-function setRunningStart(state, start, now) {
+export function setRunningStart(state, start, now) {
   const r = running(state);
   if (!r) throw new Error('No timer is running.');
   return updateEntry(state, r.id, { start }, now);
@@ -177,7 +175,7 @@ function setRunningStart(state, start, now) {
 
 // --- Entries -----------------------------------------------------------------
 
-function addEntry(state, { matterId, start, end, description = '' }, now) {
+export function addEntry(state, { matterId, start, end, description = '' }, now) {
   requireMatter(state, matterId);
   const entry = { id: newId(), matterId, start: Number(start), end: Number(end), description: String(description || '').trim() };
   if (!Number.isFinite(entry.end)) throw new Error('Enter a valid end time.');
@@ -186,7 +184,7 @@ function addEntry(state, { matterId, start, end, description = '' }, now) {
   return entry;
 }
 
-function updateEntry(state, id, patch, now) {
+export function updateEntry(state, id, patch, now) {
   const e = requireEntry(state, id);
   const next = { ...e };
   if ('matterId' in patch) next.matterId = requireMatter(state, patch.matterId).id;
@@ -198,7 +196,7 @@ function updateEntry(state, id, patch, now) {
   return e;
 }
 
-function deleteEntry(state, id) {
+export function deleteEntry(state, id) {
   requireEntry(state, id);
   removeEntry(state, id);
 }
@@ -211,7 +209,7 @@ function deleteEntry(state, id) {
 //   discard     – cut the away time out, keep timing
 //   discardStop – stop the timer as of when they left
 //   assign      – log the away time to another matter, keep timing
-function resolveAway(state, action, now, { matterId, description = '' } = {}) {
+export function resolveAway(state, action, now, { matterId, description = '' } = {}) {
   const away = state.pendingAway;
   if (!away) return null;
   if (!['keep', 'discard', 'discardStop', 'assign'].includes(action)) throw new Error('Unknown choice.');
@@ -238,7 +236,7 @@ function resolveAway(state, action, now, { matterId, description = '' } = {}) {
 
 // --- Settings ----------------------------------------------------------------
 
-function updateSettings(state, patch) {
+export function updateSettings(state, patch) {
   const s = { ...state.settings };
   const int = (v, lo, hi, label) => {
     const n = Math.round(Number(v));
@@ -266,13 +264,7 @@ function updateSettings(state, patch) {
     if (!Array.isArray(patch.workDays)) throw new Error('Pick your workdays.');
     s.workDays = [...new Set(patch.workDays.map(Number).filter((d) => d >= 0 && d <= 6))].sort();
   }
-  if ('hotkey' in patch) s.hotkey = String(patch.hotkey || '').trim();
   state.settings = s;
   return s;
 }
 
-module.exports = {
-  MIN_ENTRY_MS, DEFAULT_SETTINGS, createState, normalizeState, running, getMatter,
-  addMatter, updateMatter, startTimer, stopTimer, resumePrevious, dismissResume, setRunningStart,
-  addEntry, updateEntry, deleteEntry, resolveAway, updateSettings,
-};

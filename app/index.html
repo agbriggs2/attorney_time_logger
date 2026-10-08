@@ -2,19 +2,23 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'">
+  <meta name="theme-color" content="#2563eb">
   <title>Time Logger</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" id="favicon" href="icons/icon-192.png">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="app">
+    <div id="setupBanner"></div>
     <header id="now" class="card now" aria-live="polite"></header>
 
     <section class="card switcher">
       <input id="search" type="search" placeholder="Switch to… type a client, matter, or matter number" autocomplete="off" spellcheck="false">
       <div class="hint">
-        <kbd>Enter</kbd> start · <kbd>Shift</kbd>+<kbd>Enter</kbd> interrupt (come back after) ·
-        <span id="hotkeyHint"></span>
+        <kbd>Enter</kbd> start · <kbd>Shift</kbd>+<kbd>Enter</kbd> interrupt (come back after) · <kbd>/</kbd> jumps here
       </div>
       <ul id="matterList" class="matter-list"></ul>
     </section>
@@ -70,7 +74,7 @@
           <label class="check" title="Adds up all of a day's time on the same matter before rounding, so short interrupted stretches aren't each rounded up.">
             <input type="checkbox" id="expCombine"> One line per matter per day
           </label>
-          <button id="expSave">Save CSV…</button>
+          <button id="expSave">Download CSV</button>
         </div>
         <div id="exportStatus" class="muted"></div>
       </div>
@@ -78,6 +82,12 @@
     </section>
 
     <section id="tab-settings" class="tab" hidden>
+      <div class="card settings">
+        <h3>Setup check</h3>
+        <p class="muted">What this browser allows on this PC. Everything is optional, but each item makes the reminders more reliable.</p>
+        <div id="setupChecks" class="checks"></div>
+      </div>
+
       <form id="settingsForm" class="card settings">
         <h3>Reminders</h3>
         <label>Treat me as away after <input type="number" name="idleMinutes" min="1" max="120"> minutes with no keyboard or mouse use</label>
@@ -99,24 +109,27 @@
         </label>
         <label class="check"><input type="checkbox" name="combineOnExport"> Combine a day's time on the same matter before rounding (day totals and export default)</label>
 
-        <h3>Shortcut</h3>
-        <label>Global hotkey to open the matter switcher <input name="hotkey" placeholder="Alt+Shift+T"></label>
-        <div id="hotkeyStatus" class="muted"></div>
-
         <div class="row"><button type="submit">Save settings</button></div>
-
-        <h3>Your data</h3>
-        <p class="muted">Everything is stored only on this computer, with a daily backup kept for 30 days.</p>
-        <div class="row"><code id="dataDir"></code><button type="button" id="openData" class="secondary small">Open folder</button></div>
       </form>
+
+      <div class="card settings">
+        <h3>Your data</h3>
+        <p class="muted">Your time entries are stored only in this browser on this PC. They are never sent to GitHub or anywhere else.
+          Clearing Edge's browsing data for this site, or using an InPrivate window, would erase them, so keep backups.</p>
+        <div id="backupStatus"></div>
+        <div class="row">
+          <button type="button" id="downloadBackup" class="secondary small">Download a backup file</button>
+          <button type="button" id="restoreBackup" class="secondary small">Restore from a backup file…</button>
+          <input type="file" id="restoreFile" accept=".json,application/json" hidden>
+        </div>
+      </div>
     </section>
   </div>
 
   <div id="awayModal" class="modal" hidden></div>
+  <div id="blocked" class="modal" hidden></div>
   <div id="toast" class="toast" hidden></div>
 
-  <script src="../core/time.js"></script>
-  <script src="../core/report.js"></script>
-  <script src="app.js"></script>
+  <script type="module" src="js/ui.js"></script>
 </body>
 </html>

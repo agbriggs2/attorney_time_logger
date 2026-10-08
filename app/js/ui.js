@@ -1,14 +1,15 @@
-'use strict';
-
-const T = window.TimeCore;
-const R = window.ReportCore;
-const ipc = window.api;
+import * as T from '../core/time.js';
+import * as R from '../core/report.js';
+import { engine, subscribe, dispatch, start, takeOver, notify, notifications,
+  requestNotificationPermission, requestIdlePermission } from './engine.js';
+import * as storage from './storage.js';
+import { pip, openPip, renderPip } from './pip.js';
+import { h, fill } from './dom.js';
 
 const FAILED = Symbol('failed');
 const GAP_MIN_MS = 5 * T.MINUTE;
 
 let state = null;
-let info = {};
 const view = {
   tab: 'day',
   day: T.dateKey(Date.now()),
@@ -18,24 +19,6 @@ const view = {
 };
 
 const $ = (id) => document.getElementById(id);
-const fill = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
-
-function h(tag, props, ...children) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(props || {})) {
-    if (v == null || v === false) continue;
-    if (k.startsWith('on')) el.addEventListener(k.slice(2).toLowerCase(), v);
-    else if (k === 'class') el.className = v;
-    else if (k === 'value') el.value = v;
-    else if (k === 'checked') el.checked = !!v;
-    else el.setAttribute(k, v === true ? '' : v);
-  }
-  for (const c of children.flat(Infinity)) {
-    if (c == null || c === false) continue;
-    el.append(c instanceof Node ? c : String(c));
-  }
-  return el;
-}
 
 // --- Helpers ------------------------------------------------------------------
 
@@ -60,11 +43,12 @@ function toast(msg, isError = false) {
   toast.timer = setTimeout(() => { el.hidden = true; }, isError ? 6000 : 2500);
 }
 
-async function act(type, payload) {
+function act(type, payload) {
   try {
-    return await ipc.action(type, payload);
+    const result = dispatch(type, payload);
+    return result === undefined ? null : result;
   } catch (err) {
-    toast(String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), true);
+    toast(String(err.message || err), true);
     return FAILED;
   }
 }
@@ -128,16 +112,17 @@ function renderNow(force = false) {
     h('button', { onclick: () => act('resume') }, 'Back to it'),
     h('button', { class: 'secondary small', title: 'Forget this', onclick: () => act('dismissResume') }, '✕'));
 
+  el.classList.toggle('stopped', !r);
   if (!r) {
     fill(el,
       h('div', { class: 'now-top' },
-        h('div', { class: 'now-label' }, h('span', { class: 'dot' }), 'Not timing'),
+        h('div', { class: 'now-label' }, h('span', { class: 'dot stopped' }), 'Not timing'),
         h('div', { class: 'now-matter idle' },
           untracked
             ? `You've been at your computer since ${clock(untracked.start)} without a timer. Pick a matter below.`
-            : 'Pick a matter below to start timing.')),
+            : 'Pick a matter below to start timing.'),
+        popOutButton()),
       resumeRow);
-    document.title = 'Time Logger';
     return;
   }
 
@@ -159,7 +144,8 @@ function renderNow(force = false) {
           onchange: (e) => act('setRunningStart', { start: T.parseClockOnDay(T.dateKey(r.start), e.target.value) })
             .then(() => renderNow(true)),
         })),
-      h('button', { class: 'danger', onclick: () => act('stop') }, 'Stop')),
+      h('button', { class: 'danger', onclick: () => act('stop') }, 'Stop'),
+      popOutButton()),
     hint && h('div', { class: 'notice' },
       `You were at your computer from ${clock(hint.start)} before starting this timer.`,
       h('button', { class: 'small', onclick: () => act('setRunningStart', { start: hint.start }) }, `Count it from ${clock(hint.start)}`)),
@@ -167,7 +153,16 @@ function renderNow(force = false) {
   updateElapsed();
 }
 
+function popOutButton() {
+  if (!pip.supported) return null;
+  return h('button', {
+    class: 'secondary small', title: 'Open a small timer window that stays on top of Word, Outlook, etc.',
+    onclick: () => openPip(act).catch((err) => toast(`Couldn't open the mini timer: ${err.message}`, true)),
+  }, 'Pop out timer');
+}
+
 function updateElapsed() {
+  renderPip();
   const r = running();
   if (!r) return;
   const ms = Date.now() - r.start;
@@ -362,7 +357,9 @@ function gapRow(g) {
     h('div', { class: 'when' }, `${clock(g.start)} – ${clock(g.end)}`),
     h('div', { class: 'what' },
       h('div', { class: 'm' }, 'Untracked time'),
-      h('div', { class: 'd' }, `You were using your computer for ${T.formatMinutes(g.end - g.start)} with no timer running.`)),
+      h('div', { class: 'd' }, engine.idle.running
+        ? `You were using your computer for ${T.formatMinutes(g.end - g.start)} with no timer running.`
+        : `Time Logger was open for ${T.formatMinutes(g.end - g.start)} with no timer running.`)),
     h('div', { class: 'hrs' }, ''),
     h('div', { class: 'acts' },
       h('button', { class: 'small', onclick: () => openDayForm({ mode: 'gap', start: g.start, end: g.end }) }, 'Log this time')));
@@ -507,16 +504,14 @@ function renderExport() {
     : h('div', { class: 'empty' }, 'No completed time in this range.'));
 }
 
-async function onExport() {
+function onExport() {
   const from = $('expFrom').value;
   const to = $('expTo').value;
   if (!from || !to || from > to) return toast('Choose a valid date range.', true);
-  try {
-    const file = await ipc.exportCsv({ from, to, combine: $('expCombine').checked });
-    if (file) toast(`Saved ${file}`);
-  } catch (err) {
-    toast(String(err.message || err), true);
-  }
+  const csv = R.toCsv(state, from, to, { combine: $('expCombine').checked });
+  const name = from === to ? `time-${from}.csv` : `time-${from}-to-${to}.csv`;
+  storage.downloadFile(name, `\uFEFF${csv}`, 'text/csv;charset=utf-8'); // BOM so Excel reads UTF-8
+  toast(`Downloaded ${name}`);
 }
 
 // --- Settings tab -----------------------------------------------------------------
@@ -534,13 +529,8 @@ function fillSettings() {
   f.workEnd.value = s.workEnd;
   f.increment.value = String(s.increment);
   f.combineOnExport.checked = s.combineOnExport;
-  f.hotkey.value = s.hotkey;
   $('workDays').replaceChildren(...DAY_NAMES.map((name, i) =>
     h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'workDay', value: String(i), checked: s.workDays.includes(i) }), name)));
-  $('dataDir').textContent = info.dataDir || '';
-  $('hotkeyStatus').textContent = s.hotkey && !info.hotkeyOk
-    ? `“${s.hotkey}” could not be registered. Another app may be using it, so try a different combination.`
-    : 'Use names like Alt+Shift+T, CommandOrControl+Shift+K, or F19.';
 }
 
 async function onSaveSettings(e) {
@@ -556,18 +546,243 @@ async function onSaveSettings(e) {
     workDays: [...e.target.querySelectorAll('input[name="workDay"]:checked')].map((x) => Number(x.value)),
     increment: f.increment.value,
     combineOnExport: f.combineOnExport.checked,
-    hotkey: f.hotkey.value,
   });
   if (res === FAILED) return;
-  info = await ipc.info();
-  renderHotkeyHint();
   fillSettings();
   toast('Settings saved');
 }
 
-function renderHotkeyHint() {
-  const hk = state.settings.hotkey;
-  fill($('hotkeyHint'), hk && info.hotkeyOk ? [h('kbd', {}, hk), ' opens this from any app'] : 'Set a global hotkey in Settings');
+// --- Setup check, backups, install ----------------------------------------------------
+
+let deferredInstall = null;
+let persisted = null;
+
+const isInstalled = () => matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: window-controls-overlay)').matches;
+
+function safeLocal(key, value) {
+  try {
+    if (value === undefined) return localStorage.getItem(key);
+    localStorage.setItem(key, value);
+  } catch { /* storage unavailable */ }
+  return null;
+}
+
+async function testNotification() {
+  if (notify('Time Logger', 'Notifications are working. Reminders will appear like this.', { tag: 'test' })) {
+    toast('Test notification sent. If nothing appeared, check Windows notification settings and Focus / Do not disturb.');
+  } else {
+    toast('The notification could not be shown.', true);
+  }
+}
+
+async function allowNotifications() {
+  const res = await requestNotificationPermission();
+  if (res === 'granted') testNotification();
+  else if (res === 'denied') toast('Notifications are blocked for this site. See the Setup check in Settings to turn them back on.', true);
+  renderSetup();
+}
+
+async function allowIdle() {
+  try {
+    const res = await requestIdlePermission();
+    if (res === 'granted') toast('Away detection is on.');
+    else if (res === 'denied') toast('Away detection was not allowed.', true);
+  } catch (err) {
+    toast(`Away detection isn't available: ${err.message}`, true);
+  }
+  renderSetup();
+}
+
+async function chooseBackup() {
+  try {
+    await storage.chooseBackupFolder(engine.state);
+    toast(`Backups will be saved to “${storage.backup.folderName}”.`);
+  } catch (err) {
+    if (err.name !== 'AbortError') toast(`Couldn't use that folder: ${err.message}`, true);
+  }
+  renderSetup();
+}
+
+async function reconnectBackup() {
+  try {
+    await storage.reconnectBackupFolder(engine.state);
+  } catch (err) {
+    toast(`Couldn't reconnect the backup folder: ${err.message}`, true);
+  }
+  renderSetup();
+}
+
+async function install() {
+  if (!deferredInstall) return;
+  deferredInstall.prompt();
+  await deferredInstall.userChoice;
+  deferredInstall = null;
+  renderSetup();
+}
+
+function setupItems() {
+  const items = [];
+  const btn = (text, onclick, cls = 'small') => h('button', { type: 'button', class: cls, onclick }, text);
+
+  const np = notifications.permission;
+  items.push({
+    key: 'notify', essential: true, name: 'Reminder notifications',
+    ok: np === 'granted', warn: np === 'denied',
+    detail: np === 'granted' ? 'On. Reminders appear as Windows notifications.'
+      : np === 'denied' ? 'Blocked for this site. Click the icon at the left of the address bar, open Permissions, and set Notifications to Allow.'
+        : np === 'unsupported' ? 'This browser cannot show notifications.'
+          : 'Lets Time Logger remind you when no timer is running, even while you work in other programs.',
+    action: np === 'granted' ? btn('Send a test', testNotification, 'secondary small') : np === 'default' ? btn('Allow notifications', allowNotifications) : null,
+  });
+
+  const idle = engine.idle;
+  items.push({
+    key: 'idle', essential: true, name: 'Away detection',
+    ok: idle.running, warn: idle.supported && idle.permission === 'denied',
+    detail: idle.running ? 'On. Time Logger notices when you step away or lock your screen.'
+      : !idle.supported ? 'Not available in this browser. Time Logger can still catch sleep and closed-browser gaps.'
+        : idle.permission === 'denied' ? 'Blocked for this site. Click the icon at the left of the address bar, open Permissions, and allow "Idle detection" (or "Your device use").'
+          : 'Lets Time Logger see when your keyboard and mouse have been idle or the screen is locked (not what you are doing).',
+    action: !idle.running && idle.supported && idle.permission !== 'denied' ? btn('Allow away detection', allowIdle) : null,
+  });
+
+  const b = storage.backup;
+  const last = b.lastWritten ? `Last saved ${new Date(b.lastWritten).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}.` : '';
+  items.push({
+    key: 'backup', essential: true, name: 'Automatic backups',
+    ok: b.status === 'ok', warn: b.status === 'needs-permission' || b.status === 'error',
+    detail: !b.supported ? 'This browser cannot write to a folder. Use "Download a backup file" regularly instead.'
+      : b.status === 'ok' ? `A daily copy is saved to the “${b.folderName}” folder (30 days kept). ${last}`
+        : b.status === 'needs-permission' ? `Paused. Edge needs your OK to keep writing to “${b.folderName}”. Choose "Allow on every visit" so you aren't asked again.`
+          : b.status === 'error' ? `The last backup failed: ${b.lastError}`
+            : 'Pick a folder (for example Documents) for a daily copy of your data, in case Edge’s data is ever cleared.',
+    action: !b.supported ? null
+      : b.status === 'ok' ? [btn('Change folder', chooseBackup, 'secondary small'), ' ', btn('Stop', () => storage.stopBackups().then(renderSetup), 'secondary small')]
+        : b.status === 'needs-permission' ? btn('Reconnect backups', reconnectBackup)
+          : btn('Choose a backup folder', chooseBackup),
+  });
+
+  const installed = isInstalled();
+  items.push({
+    key: 'install', name: 'Installed as an app',
+    ok: installed,
+    detail: installed ? 'Running in its own window. Pin it to the taskbar so it is one click away.'
+      : 'Gives Time Logger its own window and taskbar icon, and a badge when no timer is running. In Edge: ⋯ menu → Apps → Install this site as an app.',
+    action: !installed && deferredInstall ? btn('Install', install) : null,
+  });
+
+  items.push({
+    key: 'storage', name: 'Protected storage',
+    ok: persisted === true,
+    detail: persisted ? 'Edge will not clear this data to free up disk space.'
+      : 'Edge may clear site data when the disk is nearly full. Installing as an app usually turns this protection on.',
+  });
+
+  items.push({
+    key: 'pip', name: 'Mini timer window',
+    ok: pip.supported,
+    detail: pip.supported ? 'Use "Pop out timer" for a small timer that stays on top of other windows.' : 'Not available in this browser.',
+  });
+
+  items.push({
+    key: 'sleep', name: 'Keep Time Logger awake', info: true,
+    detail: 'Edge can put inactive tabs to sleep, which pauses reminders. In Edge Settings → System and performance, add this site under "Never put these sites to sleep".',
+  });
+  return items;
+}
+
+function renderSetup() {
+  if (!engine.state) return;
+  const items = setupItems();
+  const statusOf = (it) => (it.info ? 'info' : it.ok ? 'ok' : it.warn ? 'warn' : 'todo');
+  const icon = { ok: '✓', warn: '!', todo: '○', info: 'i' };
+  fill($('setupChecks'), items.map((it) => h('div', { class: `check-item ${statusOf(it)}` },
+    h('span', { class: 'check-icon' }, icon[statusOf(it)]),
+    h('div', { class: 'check-text' }, h('div', { class: 'check-name' }, it.name), h('div', { class: 'muted' }, it.detail)),
+    h('div', { class: 'check-action' }, it.action || null))));
+
+  // Banner: a paused backup always shows; other missing essentials until dismissed.
+  const backupPaused = storage.backup.status === 'needs-permission';
+  const missing = items.filter((it) => it.essential && !it.ok && it.action && it.key !== 'backup' || (it.key === 'backup' && storage.backup.supported && storage.backup.status === 'off'));
+  const dismissed = Number(safeLocal('setupDismissedUntil') || 0) > Date.now();
+  const banner = $('setupBanner');
+  if (backupPaused) {
+    fill(banner, h('div', { class: 'card banner warn' },
+      h('span', {}, 'Automatic backups are paused until you allow access to the backup folder again.'),
+      h('button', { class: 'small', onclick: reconnectBackup }, 'Reconnect backups')));
+  } else if (missing.length && !dismissed) {
+    fill(banner, h('div', { class: 'card banner' },
+      h('div', { class: 'banner-text' }, h('strong', {}, 'Finish setting up reminders. '),
+        'Each takes one click, and Edge will ask you to confirm.'),
+      missing.map((it) => it.action),
+      h('button', {
+        class: 'link', onclick: () => { safeLocal('setupDismissedUntil', String(Date.now() + 3 * 24 * T.HOUR)); renderSetup(); },
+      }, 'Later')));
+  } else {
+    fill(banner);
+  }
+}
+
+// --- Tab title, icon, and taskbar badge ----------------------------------------------
+
+let chromeKey = '';
+
+function renderChrome() {
+  const r = running();
+  const key = r ? 'on' : 'off';
+  if (!r) document.title = 'Not timing · Time Logger';
+  if (key === chromeKey) return;
+  chromeKey = key;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = r ? '#16a34a' : '#dc2626';
+  g.beginPath();
+  g.arc(32, 32, 30, 0, Math.PI * 2);
+  g.fill();
+  g.strokeStyle = '#fff';
+  g.lineWidth = 7;
+  g.lineCap = 'round';
+  g.beginPath();
+  if (r) {
+    g.moveTo(32, 13); g.lineTo(32, 32); g.lineTo(45, 39);
+  } else {
+    g.moveTo(22, 20); g.lineTo(22, 44); g.moveTo(42, 20); g.lineTo(42, 44);
+  }
+  g.stroke();
+  $('favicon').href = c.toDataURL('image/png');
+  if ('setAppBadge' in navigator) {
+    (r ? navigator.clearAppBadge() : navigator.setAppBadge()).catch(() => {});
+  }
+}
+
+// --- Backup download / restore ------------------------------------------------------
+
+function onDownloadBackup() {
+  storage.downloadFile(`timelog-backup-${T.dateKey(Date.now())}.json`, JSON.stringify(engine.state), 'application/json');
+}
+
+async function onRestoreFile(e) {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  let restored;
+  try {
+    restored = storage.parseBackup(await file.text());
+  } catch (err) {
+    toast(err.message, true);
+    return;
+  }
+  const msg = `Replace everything in Time Logger with this backup?\n\n${restored.entries.length} entries and ${restored.matters.length} matters.\n\nYour current data will be downloaded as a backup file first.`;
+  if (!confirm(msg)) return;
+  onDownloadBackup();
+  if (act('replaceState', { state: restored }) !== FAILED) {
+    view.dayForm = null;
+    view.matterEditId = null;
+    renderNow(true);
+    renderDay(true);
+    toast('Backup restored.');
+  }
 }
 
 // --- Away modal ---------------------------------------------------------------------
@@ -627,7 +842,9 @@ function renderAll() {
   renderNow();
   renderMatterList();
   renderAway();
-  renderHotkeyHint();
+  renderSetup();
+  renderChrome();
+  renderPip();
   renderTab();
 }
 
@@ -637,14 +854,42 @@ function changeDay(delta) {
   renderDay(true);
 }
 
-async function init() {
-  [state, info] = await Promise.all([ipc.getState(), ipc.info()]);
-  ipc.onState((s) => { state = s; renderAll(); });
-  ipc.onFocusSearch(() => { $('search').focus(); $('search').select(); });
-  ipc.onShowDay(() => { view.day = T.dateKey(Date.now()); switchTab('day'); });
+let ready = false;
 
+function focusSearch() {
+  $('search').focus();
+  $('search').select();
+}
+
+function showBlocked() {
+  fill($('blocked'), h('div', { class: 'modal-card' },
+    h('h2', {}, 'Time Logger is already open'),
+    h('p', {}, 'It is running in another tab or window. Only one copy can run the timer at a time, so that nothing gets overwritten.'),
+    h('div', { class: 'modal-actions' },
+      h('button', { onclick: () => takeOver({ onReleased: showReleased }).then(onReady) }, 'Use this window instead'))));
+  $('blocked').hidden = false;
+}
+
+function showReleased() {
+  ready = false;
+  fill($('blocked'), h('div', { class: 'modal-card' },
+    h('h2', {}, 'Time Logger moved to another window'),
+    h('p', {}, 'You can close this tab. Your timer keeps running in the other window.'),
+    h('div', { class: 'modal-actions' },
+      h('button', { class: 'secondary', onclick: () => takeOver({ onReleased: showReleased }).then(onReady) }, 'Use this window instead'))));
+  $('blocked').hidden = false;
+}
+
+function wireEvents() {
   $('search').addEventListener('input', () => { view.sel = 0; renderMatterList(); });
   $('search').addEventListener('keydown', onSearchKey);
+  document.addEventListener('keydown', (e) => {
+    const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
+    if (e.key === '/' && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      focusSearch();
+    }
+  });
   for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => switchTab(b.dataset.tab));
   $('prevDay').addEventListener('click', () => changeDay(-1));
   $('nextDay').addEventListener('click', () => changeDay(1));
@@ -659,16 +904,38 @@ async function init() {
   $('expCombine').addEventListener('change', renderExport);
   $('expSave').addEventListener('click', onExport);
   $('settingsForm').addEventListener('submit', onSaveSettings);
-  $('openData').addEventListener('click', () => ipc.openDataFolder());
+  $('downloadBackup').addEventListener('click', onDownloadBackup);
+  $('restoreBackup').addEventListener('click', () => $('restoreFile').click());
+  $('restoreFile').addEventListener('change', onRestoreFile);
 
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstall = e;
+    renderSetup();
+  });
+  window.addEventListener('appinstalled', () => {
+    deferredInstall = null;
+    storage.requestPersistence().then((v) => { persisted = v; renderSetup(); });
+  });
+}
+
+let intervalsStarted = false;
+
+function onReady() {
+  state = engine.state;
+  ready = true;
+  $('blocked').hidden = true;
   $('expCombine').checked = state.settings.combineOnExport;
   setRange('week');
   renderAll();
   renderNow(true);
   renderDay(true);
-
-  setInterval(updateElapsed, 1000);
+  storage.isPersisted().then((v) => { persisted = v; renderSetup(); });
+  if (intervalsStarted) return;
+  intervalsStarted = true;
+  setInterval(() => { if (ready) updateElapsed(); }, 1000);
   setInterval(() => {
+    if (!ready) return;
     // Roll the day view over at midnight if it was showing "today".
     const today = T.dateKey(Date.now());
     if (renderAll.lastToday && renderAll.lastToday !== today && view.day === renderAll.lastToday) view.day = today;
@@ -676,6 +943,22 @@ async function init() {
     renderNow();
     if (view.tab === 'day') renderDay();
   }, 30 * 1000);
+}
+
+async function init() {
+  wireEvents();
+  subscribe((ev = {}) => {
+    if (!ready) return;
+    state = engine.state;
+    renderAll();
+    if (ev.focusSearch) focusSearch();
+    if (ev.showDay) { view.day = T.dateKey(Date.now()); switchTab('day'); }
+  });
+  storage.backup.listeners.add(() => { if (ready) renderSetup(); });
+  if ('serviceWorker' in navigator && window.isSecureContext) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+  if (await start({ onBlocked: showBlocked, onReleased: showReleased })) onReady();
 }
 
 init();

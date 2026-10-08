@@ -287,3 +287,41 @@ code { background: var(--bg); padding: 3px 7px; border-radius: 5px; font-size: 1
   max-width: 80vw;
 }
 .toast.error { background: var(--danger); color: #fff; }
+
+/* Setup banner and checklist */
+.banner { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--accent-soft); border-color: transparent; }
+.banner .banner-text { flex: 1 1 260px; }
+.banner.warn { background: var(--gap-soft); }
+.checks { display: grid; gap: 8px; }
+.check-item { display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.check-item:first-child { border-top: none; }
+.check-icon {
+  width: 22px; height: 22px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; color: #fff; background: var(--nonbillable);
+}
+.check-item.ok .check-icon { background: var(--live); }
+.check-item.warn .check-icon { background: var(--gap); }
+.check-item.info .check-icon { background: var(--accent); font-style: italic; }
+.check-name { font-weight: 600; }
+.check-action { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.dot.stopped { background: var(--danger); }
+
+/* Mini timer (pop-out window) */
+body.pip { margin: 0; padding: 8px; }
+.pip-card { display: grid; gap: 8px; }
+.pip-top { display: flex; align-items: center; gap: 8px; }
+.pip-matter { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pip-card.off .pip-matter { color: var(--danger); }
+.pip-clock { font-variant-numeric: tabular-nums; font-size: 20px; font-weight: 600; }
+.pip-note { background: var(--gap-soft); border-radius: 6px; padding: 4px 8px; font-size: 12px; }
+.pip-actions { display: flex; gap: 6px; }
+.pip-actions select { flex: 1; min-width: 0; }
+
+@media (max-width: 640px) {
+  .item { grid-template-columns: 1fr auto; }
+  .item .when { grid-column: 1 / -1; }
+  .totals { margin-left: 0; }
+}
+.now.stopped { border-left: 4px solid var(--danger); }
+.now.stopped .now-label { color: var(--danger); }

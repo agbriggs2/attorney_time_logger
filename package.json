@@ -1,15 +1,11 @@
 {
   "name": "attorney-time-logger",
-  "productName": "Time Logger",
-  "version": "0.1.0",
-  "description": "Desktop time tracker for attorneys: one-click matter switching, idle detection, untracked-time review, and 0.1-hour CSV export.",
-  "main": "src/main/main.js",
+  "version": "0.2.0",
+  "description": "Browser-based time tracker for attorneys: one-click matter switching, away detection, untracked-time review, and 0.1-hour CSV export. Data stays in your browser.",
   "private": true,
+  "type": "module",
   "scripts": {
-    "start": "electron .",
+    "start": "node scripts/serve.js",
     "test": "node --test test/*.test.js"
-  },
-  "devDependencies": {
-    "electron": "^44.7.0"
   }
 }

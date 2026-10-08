@@ -4,7 +4,7 @@ Run: python3 scripts/make-icons.py
 """
 import math, struct, zlib, pathlib
 
-OUT = pathlib.Path(__file__).resolve().parent.parent / "assets"
+OUT = pathlib.Path(__file__).resolve().parent.parent / "app" / "icons"
 
 
 def png(path, size, pixel):
@@ -45,8 +45,19 @@ def clock(fg, bg=None):
     return pixel
 
 
-OUT.mkdir(exist_ok=True)
-for suffix, size in (("", 16), ("@2x", 32)):
-    png(OUT / f"trayTemplate{suffix}.png", size, clock((0, 0, 0)))  # macOS menu bar (auto-tinted)
-    png(OUT / f"tray{suffix}.png", size, clock((255, 255, 255), (37, 99, 235)))  # Windows / Linux
-png(OUT / "icon.png", 256, clock((255, 255, 255), (37, 99, 235)))
+def maskable(fg, bg):
+    """Full-bleed background with the clock inside the 80% safe zone."""
+    inner = clock(fg, None)
+    def pixel(x, y, size):
+        scale = 0.62
+        off = size * (1 - scale) / 2
+        px = inner((x - off) / scale, (y - off) / scale, size) if off <= x < size - off and off <= y < size - off else (0, 0, 0, 0)
+        return px if px[3] else (*bg, 255)
+    return pixel
+
+
+OUT.mkdir(parents=True, exist_ok=True)
+BLUE, WHITE = (37, 99, 235), (255, 255, 255)
+png(OUT / "icon-192.png", 192, clock(WHITE, BLUE))
+png(OUT / "icon-512.png", 512, clock(WHITE, BLUE))
+png(OUT / "icon-maskable-512.png", 512, maskable(WHITE, BLUE))

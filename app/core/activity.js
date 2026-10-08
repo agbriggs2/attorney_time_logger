@@ -1,13 +1,13 @@
-// Called every few seconds by the main process with the OS idle reading.
+// Called every few seconds by the app with the latest idle reading.
 // Records when the computer is in use, notices when the user was away while a
 // timer ran, and decides when to nudge or prompt for an end-of-day review.
-const T = require('./time');
-const { running } = require('./store');
-const { findGaps } = require('./report');
+import * as T from './time.js';
+import { running } from './store.js';
+import { findGaps } from './report.js';
 
 const KEEP_ACTIVITY_DAYS = 90;
 
-function inWorkHours(settings, now) {
+export function inWorkHours(settings, now) {
   const d = new Date(now);
   if (!settings.workDays.includes(d.getDay())) return false;
   const mins = d.getHours() * 60 + d.getMinutes();
@@ -29,7 +29,7 @@ function prune(state, now) {
 }
 
 // sample: { idleSeconds, idleState: 'active'|'idle'|'locked'|'unknown', intervalMs }
-function processTick(state, sample, now) {
+export function processTick(state, sample, now) {
   const { idleSeconds = 0, idleState = 'active', intervalMs = 15000 } = sample;
   const s = state.settings;
   const threshold = s.idleMinutes * T.MINUTE;
@@ -89,4 +89,3 @@ function processTick(state, sample, now) {
   return events;
 }
 
-module.exports = { processTick, inWorkHours };

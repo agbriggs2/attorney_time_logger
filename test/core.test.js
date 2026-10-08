@@ -1,9 +1,9 @@
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const T = require('../src/core/time');
-const R = require('../src/core/report');
-const S = require('../src/core/store');
-const { processTick } = require('../src/core/activity');
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import * as T from '../app/core/time.js';
+import * as R from '../app/core/report.js';
+import * as S from '../app/core/store.js';
+import { processTick } from '../app/core/activity.js';
 
 const MIN = T.MINUTE;
 const at = (hhmm, key = '2026-10-07') => T.parseClockOnDay(key, hhmm); // a Wednesday
