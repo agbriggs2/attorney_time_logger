@@ -45,18 +45,23 @@ never saves anything; you check each entry and click iTK's own **Save**.
 2. Choose the dates and click **Copy for iTimeKeep**.
 3. In iTimeKeep, open a new time entry and click the **TL → iTimeKeep**
    favorite. Paste into the panel that appears.
-4. **The first time only,** the panel asks you to click iTK's New Time Entry
-   button and its Date, Matter, Hours and Narrative fields, so it learns where
-   they are.
-5. For each entry, click **Fill in iTimeKeep**. The helper types the date,
-   searches for the matter number and picks it from iTK's list, then fills in
-   hours and narrative. Check the entry, click **Save** in iTK, then click
-   **I saved it → next**.
+4. **The first time only,** the helper watches you start one practice
+   entry and remembers each step: click New Time Entry (the entry window
+   opens), click the Date field, open the matter list, click its search box
+   and type any matter number, click Search (or tell it you press Enter),
+   click the matter in the results, then click the Hours and Narrative
+   fields. Your clicks work normally while it watches. Close the practice
+   entry without saving.
+5. For each entry, click **Fill in iTimeKeep**. The helper opens a new entry,
+   types the date, looks up the matter number and clicks the result showing
+   exactly that number, then fills in hours and narrative. Check the entry,
+   click **Save** in iTK, then click **I saved it → next**.
 
 The helper works through your normal logged-in iTK session and your own
 clicks. It doesn't get around any iTK restrictions, and it can't fill a field
 iTK has locked; it tells you which fields to finish yourself. If a later iTK
-update moves things around, use ⚙ → **Re-teach fields**. Entries reach iTK
+update moves things around, use ⚙ → **Re-teach**. The entry form can be in
+a dialog on the page or in a separate window that iTK opens. Entries reach iTK
 only through your clipboard.
 
 ## First-time setup in Edge (about 2 minutes)

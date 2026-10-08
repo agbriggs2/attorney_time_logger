@@ -1,11 +1,15 @@
 <!doctype html>
 <!-- A stand-in for the iTimeKeep web portal, used to test the iTK helper.
-     It mimics what makes real single-page apps hard to automate:
+     It mimics what makes iTK hard to automate:
+     - "New Time Entry" opens the entry form in a window: an in-page dialog by
+       default, or a real browser window with ?popup=1
      - the form is rendered by script, with auto-generated element ids
      - inputs behave like React-controlled inputs: setting .value directly is
        ignored; only real typing (input events with a changed value) counts
-     - the matter box is a search-as-you-type list that appears after a delay
-     - a "recent entries" list elsewhere on the page also shows matter numbers
+     - the matter can't be typed: click the matter field to open a lookup,
+       type in its search box, click Search (or press Enter), wait for
+       results, then click a result row
+     - a "recent entries" table on the page also shows matter numbers
      - choosing a matter resets the date to today
      - Save counts clicks so tests can prove the helper never saves -->
 <html><head><meta charset="utf-8"><title>Mock iTimeKeep</title>
@@ -13,9 +17,12 @@
   body { font-family: sans-serif; margin: 20px; }
   .field { margin: 10px 0; }
   .field-label { font-size: 12px; color: #555; }
-  .result-list { border: 1px solid #ccc; list-style: none; padding: 0; margin: 0; max-width: 420px; }
-  .result-item { padding: 6px; cursor: pointer; }
-  .recent li { color: #777; }
+  .dialog { position: fixed; inset: 40px auto auto 40px; width: 520px; background: #fff; border: 1px solid #888;
+    box-shadow: 0 8px 30px rgba(0,0,0,.3); padding: 16px; z-index: 50; }
+  .lookup { border: 1px solid #aaa; padding: 8px; margin: 6px 0; background: #f7f7f7; }
+  table { border-collapse: collapse; }
+  td { padding: 4px 8px; border-bottom: 1px solid #ddd; cursor: pointer; }
+  .matter-display { width: 360px; cursor: pointer; background: #eee; }
 </style></head>
 <body>
 <div id="app">Loading…</div>
@@ -26,12 +33,14 @@
     { id: 'm3', number: '2026-0140', name: 'Acme Corp — Unrelated lease' },
     { id: 'm4', number: '90000-0001', name: 'Firm — Administrative' },
   ];
+  const params = new URLSearchParams(location.search);
   const today = () => { const d = new Date(); return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`; };
-  window.__saves = 0; window.__saved = []; window.__model = null;
+  const counters = window.opener || window; // where test counters live
+  if (!params.has('entry')) { window.__saves = 0; window.__saved = []; window.__model = null; }
   let uid = Math.floor(Math.random() * 9000) + 1000;
 
-  // React-style controlled input: tracks the last value it set itself, and
-  // ignores input events whose value didn't change from that.
+  // React-style controlled input: ignores input events whose value equals the
+  // last value set through the property (so el.value = x alone is ignored).
   function controlled(el, onChange) {
     const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
     let tracked = '';
@@ -57,55 +66,70 @@
   function renderShell() {
     const app = document.getElementById('app');
     app.innerHTML = '';
-    const bar = document.createElement('div');
     const newBtn = document.createElement('button'); newBtn.textContent = 'New Time Entry'; newBtn.id = 'btn_' + (uid++);
-    newBtn.addEventListener('click', renderForm);
-    bar.append(newBtn);
-    const recent = document.createElement('ul'); recent.className = 'recent';
-    recent.innerHTML = '<li class="result-item">Yesterday · 2026-014 · 1.2</li><li class="result-item">Yesterday · 2025-210 · 0.4</li>';
-    recent.querySelectorAll('li').forEach((li) => li.addEventListener('click', () => { window.__openedRecent = true; }));
-    const form = document.createElement('div'); form.id = 'formHost';
-    app.append(bar, form, document.createTextNode('Recent entries'), recent);
+    newBtn.addEventListener('click', () => {
+      if (params.has('popup')) window.open('?entry=1', 'itkEntry', 'width=640,height=720');
+      else openDialog();
+    });
+    const recent = document.createElement('table');
+    recent.innerHTML = '<caption>Recent entries</caption><tr class="entry-row"><td>Yesterday</td><td>2026-014</td><td>1.2</td></tr><tr class="entry-row"><td>Yesterday</td><td>2025-210</td><td>0.4</td></tr>';
+    recent.querySelectorAll('tr').forEach((tr) => tr.addEventListener('click', () => { window.__openedRecent = true; }));
+    app.append(newBtn, recent);
   }
 
-  function renderForm() {
+  function openDialog() {
+    const dlg = document.createElement('div'); dlg.className = 'dialog'; dlg.setAttribute('role', 'dialog');
+    document.body.append(dlg);
+    renderForm(dlg, () => dlg.remove());
+  }
+
+  function renderForm(host, close) {
     const model = { date: today(), matter: null, hours: '', narrative: '' };
-    window.__model = model;
-    const host = document.getElementById('formHost');
-    host.innerHTML = '';
+    counters.__model = model;
+    const h = document.createElement('h3'); h.textContent = 'New Time Entry';
     const date = document.createElement('input'); date.id = 'input_' + (uid++); date.placeholder = 'MM/DD/YYYY';
     const dateCtl = controlled(date, (v) => { model.date = v; }); dateCtl.set(model.date);
-    const matter = document.createElement('input'); matter.id = 'input_' + (uid++); matter.setAttribute('role', 'combobox');
-    const list = document.createElement('ul'); list.className = 'result-list'; list.hidden = true;
-    const matterCtl = controlled(matter, (v) => {
-      model.matter = null;
-      clearTimeout(matter._t);
-      matter._t = setTimeout(() => {
-        list.innerHTML = '';
-        const q = v.trim();
-        if (q.length < 3) { list.hidden = true; return; }
-        for (const m of MATTERS.filter((x) => x.number.includes(q) || x.name.toLowerCase().includes(q.toLowerCase()))) {
-          const li = document.createElement('li'); li.className = 'result-item'; li.setAttribute('role', 'option');
-          li.innerHTML = `<b>${m.number}</b> <span>${m.name}</span>`;
-          li.addEventListener('mousedown', (e) => {
-            e.preventDefault();
-            model.matter = m.id; matterCtl.set(`${m.number} ${m.name}`); list.hidden = true;
+
+    // Matter: a read-only display that opens a lookup panel when clicked.
+    const matter = document.createElement('input'); matter.id = 'input_' + (uid++); matter.readOnly = true;
+    matter.className = 'matter-display'; matter.placeholder = 'Click to select a matter';
+    const lookup = document.createElement('div'); lookup.className = 'lookup'; lookup.hidden = true;
+    const search = document.createElement('input'); search.id = 'input_' + (uid++); search.placeholder = 'Search client/matter';
+    let query = '';
+    controlled(search, (v) => { query = v; });
+    const go = document.createElement('button'); go.type = 'button'; go.id = 'btn_' + (uid++); go.textContent = 'Search';
+    const results = document.createElement('table');
+    const runSearch = () => {
+      results.innerHTML = '';
+      setTimeout(() => {
+        for (const m of MATTERS.filter((x) => query.trim().length >= 3 && (x.number.includes(query.trim()) || x.name.toLowerCase().includes(query.trim().toLowerCase())))) {
+          const tr = document.createElement('tr'); tr.className = 'matter-row';
+          tr.innerHTML = `<td>${m.number}</td><td>${m.name}</td>`;
+          tr.addEventListener('click', () => {
+            model.matter = m.id; matter.value = `${m.number} ${m.name}`; lookup.hidden = true;
             model.date = today(); dateCtl.set(model.date); // like iTK reloading defaults
           });
-          list.append(li);
+          results.append(tr);
         }
-        list.hidden = !list.children.length;
-      }, 250);
-    });
+      }, 500);
+    };
+    go.addEventListener('click', runSearch);
+    search.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(); });
+    lookup.append(search, go, results);
+    matter.addEventListener('click', () => { lookup.hidden = false; search.focus(); });
+
     const hours = document.createElement('input'); hours.id = 'input_' + (uid++);
     controlled(hours, (v) => { model.hours = v; });
     const narrative = document.createElement('textarea'); narrative.id = 'input_' + (uid++);
     controlled(narrative, (v) => { model.narrative = v; });
     const save = document.createElement('button'); save.textContent = 'Save';
-    save.addEventListener('click', () => { window.__saves++; window.__saved.push({ ...model }); host.innerHTML = '<p>Saved.</p>'; });
-    host.append(field('Date', date), field('Client/Matter', matter), list, field('Hours', hours), field('Narrative', narrative), save);
+    save.addEventListener('click', () => { counters.__saves++; counters.__saved.push({ ...model }); close(); });
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => { counters.__cancels = (counters.__cancels || 0) + 1; close(); });
+    host.append(h, field('Date', date), field('Client/Matter', matter), lookup, field('Hours', hours), field('Narrative', narrative), save, cancel);
   }
 
-  setTimeout(renderShell, 300);
+  if (params.has('entry')) setTimeout(() => { document.getElementById('app').innerHTML = ''; renderForm(document.getElementById('app'), () => window.close()); }, 200);
+  else setTimeout(renderShell, 300);
 </script>
 </body></html>

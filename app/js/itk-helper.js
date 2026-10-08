@@ -3,14 +3,18 @@
 // Runs as a bookmarklet on the iTimeKeep web portal. It shows a small panel
 // where you paste entries copied from Time Logger (Export → Copy for
 // iTimeKeep), then fills one iTK time entry at a time the way you would by
-// hand: typing into the fields and picking the matter from iTK's suggestion
-// list. It never clicks Save; you review each entry and save it yourself.
+// hand. It never clicks Save; you review each entry and save it yourself.
 //
-// It does not know iTK's page layout in advance. The first time, "teach mode"
-// asks you to click each field once and remembers how to find it.
+// It does not know iTK's layout in advance. The first time, teach mode
+// watches you do one entry's steps (open the entry window, look up a matter,
+// click the fields) and remembers what you clicked. Your clicks still reach
+// iTK normally while it watches.
+//
+// The entry form can be on the page, in a frame, or in a separate window that
+// iTK opens; the helper looks in all of them.
 //
 // Stored in this browser for the iTK site:
-//   localStorage   timeLoggerItkHelper  which fields to use, date format
+//   localStorage   timeLoggerItkHelper  how to find iTK's controls, date format
 //   localStorage   timeLoggerItkDone    one-way hashes of entries marked saved
 //   sessionStorage timeLoggerItkQueue   the pasted entries (gone when the tab closes)
 (function () {
@@ -24,18 +28,42 @@
   const CONFIG_KEY = 'timeLoggerItkHelper';
   const QUEUE_KEY = 'timeLoggerItkQueue';
   const DONE_KEY = 'timeLoggerItkDone';
+  const CONFIG_VERSION = 2;
 
-  const FIELDS = [
-    { key: 'newEntry', label: 'the button that starts a new time entry', kind: 'button', optional: true },
-    { key: 'date', label: 'the Date field', kind: 'date', optional: true },
-    { key: 'matter', label: 'the Client / Matter field', kind: 'matter' },
-    { key: 'hours', label: 'the Hours field', kind: 'text' },
-    { key: 'narrative', label: 'the Narrative field', kind: 'text' },
+  // The steps teach mode walks through, in the order an entry is filled.
+  //   button: something to click   field: something to type into
+  //   result: one row of the matter search results
+  const STEPS = [
+    { key: 'newEntry', kind: 'button', optional: true, name: 'New entry button',
+      prompt: "Click iTimeKeep's button for a new time entry.",
+      hint: 'Click it for real so the entry window opens.', skip: "Skip: I'll open entries myself" },
+    { key: 'date', kind: 'field', optional: true, name: 'Date field',
+      prompt: 'Click the Date field.', skip: 'Skip: iTK fills the date' },
+    { key: 'matterOpen', kind: 'button', optional: true, name: 'Open matter list',
+      prompt: 'Click whatever opens the matter list (the Matter field or its button).',
+      skip: 'Skip: the search box is already showing' },
+    { key: 'matterSearch', kind: 'field', name: 'Matter search box',
+      prompt: 'Click the matter search box, then type a matter number.',
+      hint: 'Use any matter number, such as your Admin matter.' },
+    { key: 'matterGo', kind: 'button', optional: true, name: 'Search button',
+      prompt: 'Click the Search button.', skip: 'Results appear as I type', alt: { label: 'I press Enter to search', mode: 'enter' } },
+    { key: 'matterResult', kind: 'result', name: 'Matter in the results',
+      prompt: 'Click the matter in the search results.' },
+    { key: 'hours', kind: 'field', name: 'Hours field', prompt: 'Click the Hours field.' },
+    { key: 'narrative', kind: 'field', name: 'Narrative field', prompt: 'Click the Narrative field.' },
   ];
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Visible-ish text with a space between separate pieces, so table cells
+  // like <td>2025-210</td><td>Baker</td> read "2025-210 Baker", not "2025-210Baker".
+  function textOf(el) {
+    const parts = [];
+    const walk = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) parts.push(n.nodeValue);
+    return parts.join(' ');
+  }
   const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
-  const normNum = (s) => norm(s).toLowerCase().replace(/\s+/g, '');
+  const low = (s) => norm(s).toLowerCase();
 
   function load(store, key, fallback) {
     try {
@@ -52,7 +80,9 @@
     } catch { /* storage unavailable */ }
   }
 
-  let config = load(localStorage, CONFIG_KEY, null) || { fields: {}, dateFormat: 'MM/DD/YYYY' };
+  const freshConfig = () => ({ version: CONFIG_VERSION, fields: {}, matterGoMode: 'button', dateFormat: 'MM/DD/YYYY' });
+  let config = load(localStorage, CONFIG_KEY, null);
+  if (!config || config.version !== CONFIG_VERSION) config = { ...freshConfig(), dateFormat: (config && config.dateFormat) || 'MM/DD/YYYY' };
   let queue = load(sessionStorage, QUEUE_KEY, null) || { entries: [], index: 0 };
   let done = new Set(load(localStorage, DONE_KEY, []));
   let view = 'main'; // main | teach | settings
@@ -60,31 +90,73 @@
   let status = null; // { kind: 'info'|'ok'|'warn'|'error', text, checks? }
   let busy = false;
 
+  const saveConfig = () => save(localStorage, CONFIG_KEY, config);
+
   // A short one-way fingerprint, so "already saved" can be remembered without
   // keeping client narratives in storage.
   function fingerprint(e) {
     const s = [e.date, e.matterNumber, e.hours, e.narrative].join('|');
-    let h = 2166136261;
+    let x = 2166136261;
     for (let i = 0; i < s.length; i++) {
-      h ^= s.charCodeAt(i);
-      h = Math.imul(h, 16777619);
+      x ^= s.charCodeAt(i);
+      x = Math.imul(x, 16777619);
     }
-    return (h >>> 0).toString(36);
+    return (x >>> 0).toString(36);
   }
 
-  // --- Finding iTK's fields -------------------------------------------------------
+  // --- Windows and frames -----------------------------------------------------------
 
-  const CONTROL = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select, [contenteditable=""], [contenteditable=true], [role=combobox], [role=textbox]';
-  const ATTRS = ['name', 'aria-label', 'placeholder', 'formcontrolname', 'data-testid', 'data-test', 'data-automation-id', 'data-field', 'title'];
+  // If iTK opens the entry form in its own window, keep a handle to it so the
+  // helper can work there too. (Only windows opened after the helper starts.)
+  const popups = [];
+  const realOpen = window.open;
+  window.open = function (...args) {
+    const w = realOpen.apply(this, args);
+    if (w) popups.unshift(w);
+    return w;
+  };
 
-  const isVisible = (el) => !!el && el.isConnected && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+  // Every document to search, newest window first, then frames, then this page.
+  function docs() {
+    const out = [];
+    const add = (d) => {
+      if (!d || out.includes(d)) return;
+      out.push(d);
+      for (const f of d.querySelectorAll('iframe, frame')) {
+        try { add(f.contentDocument); } catch { /* other site */ }
+      }
+    };
+    for (const w of popups) {
+      try { if (!w.closed) add(w.document); } catch { /* other site */ }
+    }
+    add(document);
+    return out;
+  }
+
+  const viewOf = (el) => el.ownerDocument.defaultView;
+
+  // --- Finding iTK's controls -------------------------------------------------------
+
+  const CONTROL = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select, [contenteditable=""], [contenteditable=true], [role=combobox], [role=textbox], [role=searchbox]';
+  const BUTTON = 'button, [role=button], a, input[type=button], input[type=submit], input[type=image]';
+  const ROW = '[role=option], [role=row], [role=listitem], [role=menuitem], tr, li, mat-option, a, button';
+  const ATTRS = ['name', 'aria-label', 'placeholder', 'formcontrolname', 'data-testid', 'data-test', 'data-automation-id', 'data-field', 'title', 'type'];
+
+  function isVisible(el) {
+    if (!el || !el.isConnected || !el.getClientRects().length) return false;
+    const cs = viewOf(el).getComputedStyle(el);
+    return cs.visibility !== 'hidden' && cs.display !== 'none';
+  }
   const inPanel = (el) => !!el && (el === host || host.contains(el));
 
-  // Framework-generated ids (mat-input-3, input_1234, a GUID) change between visits.
-  const stableId = (id) => (id && !/\d{2,}|[-_]\d+$|^[a-f0-9-]{16,}$/i.test(id) ? id : null);
+  // Framework-generated ids and classes (mat-input-3, input_1234, css-1x2y3z)
+  // change between visits, so they're not used to find things.
+  const stableName = (s) => (s && !/\d{2,}|[-_]\d+$|^[a-f0-9-]{16,}$|^(css|sc|jsx|ng|ember)-/i.test(s) ? s : null);
+  const STATE_CLASS = /^(is-|has-)?(active|selected|hover(ed)?|focus(ed)?|highlight(ed)?|current|open|even|odd|first|last)$/i;
 
   function controlFor(el, kind) {
-    if (kind === 'button') return el.closest('button, [role=button], a, input[type=button], input[type=submit]') || el;
+    if (kind === 'button') return el.closest(BUTTON) || el;
+    if (kind === 'result') return el.closest(ROW) || el.closest('[class*="item" i], [class*="row" i], [class*="result" i], [class*="option" i]') || el;
     if (el.matches(CONTROL)) return el;
     const inside = [...el.querySelectorAll(CONTROL)].filter(isVisible);
     if (inside.length === 1) return inside[0];
@@ -96,18 +168,21 @@
   }
 
   function labelFor(el) {
+    const d = el.ownerDocument;
     if (el.id) {
-      const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      const l = d.querySelector(`label[for="${CSS.escape(el.id)}"]`);
       if (l) return norm(l.textContent);
     }
     const by = el.getAttribute('aria-labelledby');
     if (by) {
-      const t = by.split(/\s+/).map((id) => document.getElementById(id)).filter(Boolean).map((n) => n.textContent).join(' ');
+      const t = by.split(/\s+/).map((id) => d.getElementById(id)).filter(Boolean).map((n) => n.textContent).join(' ');
       if (norm(t)) return norm(t);
     }
     const wrap = el.closest('label');
     if (wrap) return norm(wrap.textContent);
+    // A nearby label counts only if its container holds no other control.
     for (let p = el.parentElement, depth = 0; p && depth < 3; p = p.parentElement, depth++) {
+      if ([...p.querySelectorAll(CONTROL)].some((c) => c !== el)) break;
       const l = p.querySelector('label, [class*="label" i]');
       if (l && !l.contains(el) && norm(l.textContent).length < 40) return norm(l.textContent);
     }
@@ -116,9 +191,9 @@
 
   function cssPath(el) {
     const parts = [];
-    for (let n = el; n && n.nodeType === 1 && n !== document.body; n = n.parentElement) {
+    for (let n = el; n && n.nodeType === 1 && n !== n.ownerDocument.body; n = n.parentElement) {
       let part = n.tagName.toLowerCase();
-      const id = stableId(n.id);
+      const id = stableName(n.id);
       if (id) {
         parts.unshift(`#${CSS.escape(id)}`);
         break;
@@ -130,20 +205,39 @@
     return parts.join(' > ');
   }
 
+  // Button text is kept only when it looks like a label ("Search", "New
+  // Entry"), never when it could be client data such as a matter name.
+  const safeText = (t) => (t.length <= 30 && !/\d/.test(t) ? t : null);
+
   function describe(el, kind) {
     const attrs = {};
     for (const a of ATTRS) {
       const v = el.getAttribute(a);
-      if (v) attrs[a] = v;
+      if (v && (a !== 'title' || safeText(v))) attrs[a] = v;
     }
+    const icon = el.querySelector('[class*="icon" i], [class*="fa-" i], svg[data-icon], i[class]');
     return {
       tag: el.tagName.toLowerCase(),
-      id: stableId(el.id),
+      id: stableName(el.id),
       attrs,
       label: kind === 'button' ? null : labelFor(el),
-      text: kind === 'button' ? norm(el.textContent).slice(0, 60) : null,
+      text: kind === 'button' ? safeText(norm(el.textContent)) : null,
+      icon: kind === 'button' && icon ? (icon.getAttribute('data-icon') || [...icon.classList].filter((c) => /fa-|icon-/.test(c)).join(' ')) || null : null,
       path: cssPath(el),
     };
+  }
+
+  // What a result row looks like (element type, role, stable classes), so the
+  // same kind of row can be recognized for other matters. No row text is kept.
+  function rowSignature(el) {
+    return {
+      tag: el.tagName.toLowerCase(),
+      role: el.getAttribute('role'),
+      classes: [...el.classList].filter((c) => stableName(c) && !STATE_CLASS.test(c) && c.length < 40),
+    };
+  }
+  function rowSelector(sig) {
+    return sig.tag + (sig.role ? `[role="${sig.role}"]` : '') + sig.classes.map((c) => `.${CSS.escape(c)}`).join('');
   }
 
   function uniqueVisible(list) {
@@ -151,20 +245,20 @@
     return v.length === 1 ? v[0] : null;
   }
 
-  function find(desc) {
-    if (!desc) return null;
+  function findIn(d, desc) {
     if (desc.id) {
-      const el = document.getElementById(desc.id);
+      const el = d.getElementById(desc.id);
       if (isVisible(el)) return el;
     }
     for (const [a, v] of Object.entries(desc.attrs || {})) {
-      const el = uniqueVisible(document.querySelectorAll(`${desc.tag}[${a}="${CSS.escape(v)}"]`));
+      if (a === 'type') continue;
+      const el = uniqueVisible(d.querySelectorAll(`${desc.tag}[${a}="${CSS.escape(v)}"]`));
       if (el) return el;
     }
     if (desc.label) {
-      const labels = [...document.querySelectorAll('label, [class*="label" i]')].filter((l) => norm(l.textContent) === desc.label && isVisible(l));
+      const labels = [...d.querySelectorAll('label, [class*="label" i]')].filter((l) => norm(l.textContent) === desc.label && isVisible(l));
       for (const l of labels) {
-        const el = (l.control) || (l.htmlFor && document.getElementById(l.htmlFor));
+        const el = l.control || (l.htmlFor && d.getElementById(l.htmlFor));
         if (isVisible(el)) return el;
         for (let p = l.parentElement, depth = 0; p && depth < 3; p = p.parentElement, depth++) {
           const c = uniqueVisible(p.querySelectorAll(desc.tag));
@@ -173,115 +267,179 @@
       }
     }
     if (desc.text) {
-      const el = uniqueVisible([...document.querySelectorAll(`${desc.tag}, [role=button]`)].filter((b) => norm(b.textContent).slice(0, 60) === desc.text));
+      const el = uniqueVisible([...d.querySelectorAll(`${desc.tag}, [role=button]`)].filter((b) => norm(b.textContent) === desc.text));
+      if (el) return el;
+    }
+    if (desc.icon) {
+      const el = uniqueVisible([...d.querySelectorAll(desc.tag)].filter((b) => {
+        const i = b.querySelector('[class*="icon" i], [class*="fa-" i], svg[data-icon], i[class]');
+        return i && ((i.getAttribute('data-icon') || [...i.classList].filter((c) => /fa-|icon-/.test(c)).join(' ')) === desc.icon);
+      }));
       if (el) return el;
     }
     try {
-      const el = document.querySelector(desc.path);
+      const el = d.querySelector(desc.path);
       if (isVisible(el)) return el;
     } catch { /* bad selector */ }
     return null;
   }
 
-  // --- Typing and clicking like a person ------------------------------------------
+  function find(desc) {
+    if (!desc) return null;
+    for (const d of docs()) {
+      const el = findIn(d, desc);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  async function waitFor(desc, ms = 4000) {
+    for (let t = 0; t <= ms; t += 100) {
+      const el = find(desc);
+      if (el) return el;
+      await sleep(100);
+    }
+    return null;
+  }
+
+  // --- Typing and clicking like a person -----------------------------------------------
 
   const valueOf = (el) => (el.isContentEditable ? el.textContent : el.value);
 
   function nativeSet(el, value) {
-    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
-      : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-    setter.call(el, value);
+    const W = viewOf(el);
+    const proto = el instanceof W.HTMLTextAreaElement ? W.HTMLTextAreaElement.prototype
+      : el instanceof W.HTMLSelectElement ? W.HTMLSelectElement.prototype : W.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
   }
 
-  function key(el, type, ch) {
-    el.dispatchEvent(new KeyboardEvent(type, { key: ch, bubbles: true, cancelable: true, composed: true }));
+  function fire(el, Type, type, init) {
+    const W = viewOf(el);
+    el.dispatchEvent(new W[Type](type, { bubbles: true, cancelable: true, composed: true, ...init }));
+  }
+
+  function keyEvent(el, type, k) {
+    const code = k === 'Enter' ? 13 : k.length === 1 ? k.toUpperCase().charCodeAt(0) : 0;
+    const W = viewOf(el);
+    const ev = new W.KeyboardEvent(type, { key: k, code: k === 'Enter' ? 'Enter' : undefined, bubbles: true, cancelable: true, composed: true });
+    // Older widgets look at keyCode/which, which the constructor can't set.
+    Object.defineProperty(ev, 'keyCode', { get: () => code });
+    Object.defineProperty(ev, 'which', { get: () => code });
+    el.dispatchEvent(ev);
   }
 
   function clearField(el) {
+    const d = el.ownerDocument;
     el.focus();
     if (el.isContentEditable) {
-      document.execCommand('selectAll');
-      document.execCommand('delete');
+      d.execCommand('selectAll');
+      d.execCommand('delete');
     } else if (typeof el.select === 'function') {
       el.select();
-      if (!document.execCommand('delete') || el.value) {
+      if (!d.execCommand('delete') || el.value) {
         nativeSet(el, '');
-        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+        fire(el, 'InputEvent', 'input', { inputType: 'deleteContentBackward' });
       }
     }
   }
 
-  // Types text one character at a time with key events, as iTK's search boxes
-  // expect; or inserts it in one go for long text like the narrative.
+  // Types text with key events, one character at a time for search boxes, or
+  // all at once for long text like the narrative.
   async function typeInto(el, text, { perChar = false } = {}) {
     if (el.tagName === 'SELECT') {
-      const opt = [...el.options].find((o) => normNum(o.textContent).includes(normNum(text)) || o.value === text);
+      const opt = [...el.options].find((o) => low(o.textContent).includes(low(text)) || o.value === text);
       if (!opt) return false;
       nativeSet(el, opt.value);
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+      fire(el, 'Event', 'change');
       return true;
     }
     if (el.readOnly || el.disabled) return false;
+    const d = el.ownerDocument;
     clearField(el);
-    const chunks = perChar ? [...text] : [text];
-    for (const chunk of chunks) {
-      key(el, 'keydown', chunk);
+    for (const chunk of perChar ? [...text] : [text]) {
+      keyEvent(el, 'keydown', chunk);
       const before = valueOf(el);
-      if (!document.execCommand('insertText', false, chunk) || valueOf(el) === before) {
+      if (!d.execCommand('insertText', false, chunk) || valueOf(el) === before) {
         nativeSet(el, before + chunk);
-        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: chunk, inputType: 'insertText' }));
+        fire(el, 'InputEvent', 'input', { data: chunk, inputType: 'insertText' });
       }
-      key(el, 'keyup', chunk);
+      keyEvent(el, 'keyup', chunk);
       if (perChar) await sleep(35);
     }
-    el.dispatchEvent(new Event('change', { bubbles: true }));
+    fire(el, 'Event', 'change');
     return true;
   }
 
+  function pressEnter(el) {
+    keyEvent(el, 'keydown', 'Enter');
+    keyEvent(el, 'keypress', 'Enter');
+    keyEvent(el, 'keyup', 'Enter');
+  }
+
   function blur(el) {
-    el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
-    el.dispatchEvent(new FocusEvent('blur'));
-    if (document.activeElement === el) el.blur();
+    fire(el, 'FocusEvent', 'focusout', {});
+    el.dispatchEvent(new (viewOf(el).FocusEvent)('blur'));
+    if (el.ownerDocument.activeElement === el) el.blur();
   }
 
   function click(el) {
-    const opts = { bubbles: true, cancelable: true, composed: true, view: window, button: 0 };
-    el.dispatchEvent(new PointerEvent('pointerdown', opts));
-    el.dispatchEvent(new MouseEvent('mousedown', opts));
-    el.dispatchEvent(new PointerEvent('pointerup', opts));
-    el.dispatchEvent(new MouseEvent('mouseup', opts));
+    const init = { view: viewOf(el), button: 0 };
+    fire(el, 'PointerEvent', 'pointerdown', init);
+    fire(el, 'MouseEvent', 'mousedown', init);
+    fire(el, 'PointerEvent', 'pointerup', init);
+    fire(el, 'MouseEvent', 'mouseup', init);
     el.click();
   }
 
-  // Things that might be entries in a suggestion list.
-  const OPTION = '[role=option], li, mat-option, tr, .dropdown-item, [class*="option" i], [class*="suggest" i], [class*="result" i], [class*="item" i]';
+  // --- Picking the matter from the search results -----------------------------------------
 
-  function optionCandidates(except) {
-    return [...document.querySelectorAll(OPTION)].filter((el) => isVisible(el) && !inPanel(el) && !el.contains(except) && el !== except);
+  const GENERIC_ROW = `${ROW}, [class*="option" i], [class*="result" i], [class*="item" i], [class*="row" i]`;
+
+  function rowCandidates() {
+    const sig = config.fields.matterResult;
+    const learned = sig ? rowSelector(sig) : null;
+    const out = [];
+    for (const d of docs()) {
+      if (learned) for (const el of d.querySelectorAll(learned)) out.push({ el, learned: true });
+      for (const el of d.querySelectorAll(GENERIC_ROW)) out.push({ el, learned: false });
+    }
+    return out.filter((c) => isVisible(c.el) && !inPanel(c.el));
   }
 
-  // After typing the matter number, wait for iTK's list and click the one new
-  // suggestion that contains that number. Anything already on the page before
-  // typing (e.g. a list of recent entries) is ignored.
-  async function pickMatter(input, number, before) {
-    const low = (t) => norm(t).toLowerCase();
+  // Waits for search results and clicks the row showing this matter number.
+  // Rows that were on screen before the search (e.g. a recent-entries list)
+  // are ignored unless nothing new turns up.
+  async function pickResult(number, before) {
     const needle = low(number);
+    const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // The number must appear on its own: "2026-014" must not match "2026-0140".
-    const whole = new RegExp(`(^|[^a-z0-9])${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9])`);
-    for (let i = 0; i < 40; i++) {
+    const whole = new RegExp(`(^|[^a-z0-9])${esc}(?![a-z0-9])`);
+    const choose = (allowOld) => {
+      const hits = rowCandidates().filter((c) => (allowOld || !before.has(c.el)) && whole.test(low(textOf(c.el))));
+      const learned = hits.filter((c) => c.learned).map((c) => c.el);
+      let pool = learned.length ? learned : hits.map((c) => c.el);
+      pool = [...new Set(pool)];
+      pool = pool.filter((el) => !pool.some((o) => o !== el && el.contains(o)));
+      if (!pool.length) return null;
+      if (pool.length === 1) return pool[0];
+      const starts = pool.filter((el) => low(textOf(el)).startsWith(needle));
+      return starts.length === 1 ? starts[0] : 'ambiguous';
+    };
+    for (let i = 0; i < 80; i++) {
       await sleep(100);
-      const hits = optionCandidates(input).filter((el) => !before.has(el) && whole.test(low(el.textContent)));
-      const leaves = hits.filter((el) => !hits.some((o) => o !== el && el.contains(o)));
-      if (!leaves.length) continue;
-      const starts = leaves.filter((el) => low(el.textContent).startsWith(needle));
-      const pick = leaves.length === 1 ? leaves[0] : starts.length === 1 ? starts[0] : null;
-      if (!pick) return 'ambiguous';
-      const target = pick.closest('[role=option], li, mat-option, tr') || pick;
-      click(target);
+      const pick = choose(false);
+      if (pick === 'ambiguous') return 'ambiguous';
+      if (pick) {
+        click(pick);
+        return 'picked';
+      }
+    }
+    const old = choose(true);
+    if (old && old !== 'ambiguous') {
+      click(old);
       return 'picked';
     }
-    return 'none';
+    return old === 'ambiguous' ? 'ambiguous' : 'none';
   }
 
   function formatDate(iso, fmt, el) {
@@ -291,16 +449,7 @@
     return map[fmt] || map['MM/DD/YYYY'];
   }
 
-  // --- Filling one entry ----------------------------------------------------------
-
-  async function waitFor(desc, ms = 3000) {
-    for (let t = 0; t < ms; t += 100) {
-      const el = find(desc);
-      if (el) return el;
-      await sleep(100);
-    }
-    return null;
-  }
+  // --- Filling one entry ----------------------------------------------------------------
 
   async function fillEntry(entry) {
     const f = config.fields;
@@ -309,53 +458,65 @@
 
     if (f.newEntry) {
       const btn = find(f.newEntry);
-      if (btn) {
-        click(btn);
-        await sleep(400);
-      } else {
-        note(null, "Couldn't find the new-entry button. Open a new entry in iTK first if one isn't open.");
-      }
+      if (btn) click(btn);
+      else note(null, "Couldn't find the new-entry button, so I'm using the entry that's open.");
+    }
+    // Wait for the entry form (it may be opening in a new window).
+    const first = f.date || f.matterOpen || f.matterSearch;
+    if (!(await waitFor(first, 8000))) {
+      throw new Error("Couldn't find the time entry form. Open a new time entry in iTK and try again, or re-teach under ⚙.");
     }
 
-    const matter = await waitFor(f.matter);
-    if (!matter) throw new Error("Couldn't find the matter field. Open a new time entry in iTK, or re-teach the fields under Settings.");
-
-    let dateEl = null;
-    if (f.date) {
-      dateEl = find(f.date);
-      if (!dateEl) note(false, 'Date: field not found. Set it yourself.');
-    }
+    // Date
+    let dateEl = f.date ? find(f.date) : null;
+    let wantedDate = null;
     const fillDate = async () => {
-      if (!dateEl) return;
-      const value = formatDate(entry.date, config.dateFormat, dateEl);
-      if (await typeInto(dateEl, value)) blur(dateEl);
-      return value;
+      dateEl = (f.date && find(f.date)) || dateEl;
+      if (!dateEl) return false;
+      wantedDate = formatDate(entry.date, config.dateFormat, dateEl);
+      if (!(await typeInto(dateEl, wantedDate))) return false;
+      blur(dateEl);
+      return true;
     };
-    const wantedDate = await fillDate();
+    const dateTyped = f.date ? await fillDate() : false;
 
-    // Matter: type the number, then pick it from the suggestions.
-    const before = new Set(optionCandidates(matter));
-    await typeInto(matter, entry.matterNumber, { perChar: true });
-    if (matter.tagName === 'SELECT') {
-      note(true, `Matter: ${entry.matterNumber} selected`);
-    } else {
-      const result = await pickMatter(matter, entry.matterNumber, before);
-      if (result === 'picked') note(true, `Matter: picked ${entry.matterNumber} from iTK's list`);
-      else if (result === 'ambiguous') note(false, `Matter: several matches for ${entry.matterNumber}. Pick the right one in iTK's list.`);
-      else note(false, `Matter: no suggestion for ${entry.matterNumber} appeared. Choose the matter yourself.`);
-      blur(matter);
+    // Matter: open the list, search for the number, click the result.
+    const before = new Set(rowCandidates().map((c) => c.el));
+    let matterOk = false;
+    if (f.matterOpen) {
+      const opener = await waitFor(f.matterOpen);
+      if (opener) click(opener);
     }
-    await sleep(600); // iTK may reload defaults after a matter is chosen
+    const search = await waitFor(f.matterSearch);
+    if (!search) {
+      note(false, `Matter: couldn't find the search box. Look up ${entry.matterNumber} yourself.`);
+    } else {
+      await typeInto(search, entry.matterNumber, { perChar: true });
+      if (config.matterGoMode === 'enter') pressEnter(search);
+      else if (config.matterGoMode === 'button' && f.matterGo) {
+        const go = await waitFor(f.matterGo, 2000);
+        if (go) click(go);
+        else note(false, "Matter: couldn't find the Search button.");
+      }
+      const result = await pickResult(entry.matterNumber, before);
+      matterOk = result === 'picked';
+      if (matterOk) note(true, `Matter: picked ${entry.matterNumber}`);
+      else if (result === 'ambiguous') note(false, `Matter: more than one result shows ${entry.matterNumber}. Click the right one.`);
+      else note(false, `Matter: ${entry.matterNumber} didn't appear in the results. Look it up yourself.`);
+    }
+    await sleep(700); // iTK may reload defaults after a matter is chosen
 
-    const hours = find(f.hours);
+    // Hours and narrative
+    const hours = await waitFor(f.hours, 2000);
     if (hours && (await typeInto(hours, entry.hours))) {
       blur(hours);
-      note(norm(valueOf(hours)) === entry.hours || parseFloat(valueOf(hours)) === parseFloat(entry.hours), `Hours: ${entry.hours}`);
+      const v = valueOf(hours);
+      note(norm(v) === entry.hours || parseFloat(v) === parseFloat(entry.hours), `Hours: ${entry.hours}`);
     } else {
       note(false, 'Hours: field not found or locked. Enter it yourself.');
     }
 
-    const narrative = find(f.narrative);
+    const narrative = await waitFor(f.narrative, 2000);
     if (narrative && (await typeInto(narrative, entry.narrative))) {
       blur(narrative);
       note(norm(valueOf(narrative)) === norm(entry.narrative), 'Narrative filled');
@@ -364,20 +525,19 @@
     }
 
     // Choosing a matter can reset the date; put it back once if so.
-    if (dateEl && wantedDate) {
-      const el = find(f.date) || dateEl;
-      if (normNum(valueOf(el)) !== normNum(wantedDate)) {
-        dateEl = el;
-        await fillDate();
+    if (f.date) {
+      if (!dateTyped) {
+        note(false, `Date: couldn't type into the date field. Set it to ${formatDate(entry.date, config.dateFormat)} yourself.`);
+      } else {
+        const el = find(f.date) || dateEl;
+        if (low(valueOf(el)) !== low(wantedDate)) await fillDate();
+        note(low(valueOf(find(f.date) || el)) === low(wantedDate), `Date: ${wantedDate}`);
       }
-      note(normNum(valueOf(el)) === normNum(wantedDate), `Date: ${wantedDate}`);
-    } else if (dateEl && !wantedDate) {
-      note(false, 'Date: the field is locked. Set it yourself.');
     }
     return checks;
   }
 
-  // --- Panel UI -----------------------------------------------------------------------
+  // --- Panel UI -----------------------------------------------------------------------------
 
   const host = document.createElement('div');
   host.setAttribute('data-time-logger-helper', '');
@@ -416,13 +576,13 @@
     .status.error { background: #fde8e8; }
     .status ul { margin: 6px 0 0; padding-left: 18px; }
     .status li.bad { color: #b45309; }
+    .prompt { font-size: 14px; font-weight: 700; }
     .steps { margin: 0; padding-left: 18px; }
-    .steps li.now { font-weight: 700; }
+    .steps li.now { font-weight: 700; color: #2563eb; }
     .steps li.set { color: #16a34a; }
+    .steps li.skipped { color: #677084; }
     .nav { display: flex; align-items: center; gap: 6px; }
     .nav .count { flex: 1; text-align: center; }
-    .hl { position: fixed; pointer-events: none; border: 2px solid #2563eb; background: rgba(37,99,235,.12);
-      border-radius: 4px; display: none; }
   `;
   try {
     const sheet = new CSSStyleSheet();
@@ -448,8 +608,7 @@
   }
 
   const panel = h('div', { class: 'panel' });
-  const highlight = h('div', { class: 'hl' });
-  root.append(panel, highlight);
+  root.append(panel);
   document.body.append(host);
 
   function setQueue(q) {
@@ -457,30 +616,29 @@
     save(sessionStorage, QUEUE_KEY, q.entries.length ? q : null);
   }
 
+  const NOT_OURS = 'That isn\'t Time Logger data. In Time Logger, use Export → "Copy for iTimeKeep", then paste here.';
   function parsePaste(text) {
     let data;
     try {
       data = JSON.parse(text);
     } catch {
-      throw new Error('That isn\'t Time Logger data. In Time Logger, use Export → "Copy for iTimeKeep", then paste here.');
+      throw new Error(NOT_OURS);
     }
-    if (!data || data.format !== 'time-logger-itk' || !Array.isArray(data.entries)) {
-      throw new Error('That isn\'t Time Logger data. In Time Logger, use Export → "Copy for iTimeKeep", then paste here.');
-    }
+    if (!data || data.format !== 'time-logger-itk' || !Array.isArray(data.entries)) throw new Error(NOT_OURS);
     return data.entries.filter((e) => e && e.date && e.matterNumber && e.hours);
   }
 
-  const fieldsTaught = () => FIELDS.every((f) => f.optional || config.fields[f.key]);
+  const taught = () => STEPS.every((s) => s.optional || config.fields[s.key]);
 
   function render() {
-    const close = h('button', { title: 'Hide (click the bookmark again to reopen)', onclick: () => toggle(false) }, '✕');
     const head = h('div', { class: 'head' }, h('b', {}, 'Time Logger → iTimeKeep'),
-      view === 'main' ? h('button', { title: 'Settings', onclick: () => { view = 'settings'; render(); } }, '⚙') : null, close);
+      view === 'main' ? h('button', { title: 'Settings', onclick: () => { view = 'settings'; render(); } }, '⚙') : null,
+      h('button', { title: 'Hide (click the favorite again to reopen)', onclick: () => toggle(false) }, '✕'));
     makeDraggable(head);
     let body;
     if (view === 'teach') body = renderTeach();
     else if (view === 'settings') body = renderSettings();
-    else if (!fieldsTaught()) body = renderIntro();
+    else if (!taught()) body = renderIntro();
     else if (!queue.entries.length) body = renderPaste();
     else body = renderEntry();
     panel.replaceChildren(head, h('div', { class: 'body' }, body));
@@ -496,32 +654,34 @@
 
   function renderIntro() {
     return [
-      h('div', {}, h('b', {}, 'First, show me where iTimeKeep\'s fields are.')),
-      h('div', { class: 'muted' }, 'Open a new, empty time entry in iTimeKeep. Then click Start and click each field when asked. You only do this once.'),
+      h('div', { class: 'prompt' }, 'First, show me how you enter time in iTimeKeep.'),
+      h('div', {}, 'I\'ll watch while you start one entry: open the entry window, look up a matter, and click the Hours and Narrative fields. Your clicks work normally while I watch. You only do this once.'),
+      h('div', { class: 'muted' }, 'At the end, close that practice entry without saving.'),
       h('div', { class: 'row' }, h('button', { onclick: startTeach }, 'Start')),
+      statusBox(),
     ];
   }
 
   function renderPaste() {
     const ta = h('textarea', { placeholder: 'Paste here (Ctrl+V)' });
-    const load = () => {
+    const loadEntries = () => {
       try {
         const entries = parsePaste(ta.value);
         if (!entries.length) throw new Error('There were no entries in what you pasted.');
         const first = entries.findIndex((e) => !done.has(fingerprint(e)));
         setQueue({ entries, index: first < 0 ? 0 : first });
-        status = { kind: 'info', text: `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} ready. Open a new time entry in iTimeKeep if needed, then click "Fill in iTimeKeep".` };
+        status = { kind: 'info', text: `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} ready. Click "Fill in iTimeKeep" to start.` };
       } catch (err) {
         status = { kind: 'error', text: err.message };
       }
       render();
     };
-    ta.addEventListener('paste', () => setTimeout(load, 0));
+    ta.addEventListener('paste', () => setTimeout(loadEntries, 0));
     setTimeout(() => ta.focus(), 0);
     return [
       h('div', {}, 'In Time Logger, go to ', h('b', {}, 'Export'), ', choose the dates, and click ', h('b', {}, 'Copy for iTimeKeep'), '. Then paste here.'),
       ta,
-      h('div', { class: 'row' }, h('button', { onclick: load }, 'Load entries')),
+      h('div', { class: 'row' }, h('button', { onclick: loadEntries }, 'Load entries')),
       statusBox(),
     ];
   }
@@ -582,8 +742,13 @@
     ];
   }
 
+  function stepState(s) {
+    if (s.key === 'matterGo' && config.matterGoMode !== 'button') return config.matterGoMode === 'enter' ? 'press Enter' : 'automatic';
+    return config.fields[s.key] ? 'set' : s.optional ? 'skipped' : 'not set';
+  }
+
   function renderSettings() {
-    const fmt = h('select', { onchange: (ev) => { config.dateFormat = ev.target.value; save(localStorage, CONFIG_KEY, config); } },
+    const fmt = h('select', { onchange: (ev) => { config.dateFormat = ev.target.value; saveConfig(); } },
       ['MM/DD/YYYY', 'M/D/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD'].map((f) => {
         const o = h('option', { value: f }, f);
         if (f === config.dateFormat) o.selected = true;
@@ -591,15 +756,15 @@
       }));
     return [
       h('div', { class: 'row' }, h('span', {}, 'Date format iTK expects:'), fmt),
-      h('div', {}, h('b', {}, 'Fields'), h('ul', { class: 'steps' },
-        FIELDS.map((f) => h('li', { class: config.fields[f.key] ? 'set' : '' }, `${f.label}: ${config.fields[f.key] ? 'set' : f.optional ? 'skipped' : 'not set'}`)))),
+      h('div', {}, h('b', {}, 'What I learned'), h('ul', { class: 'steps' },
+        STEPS.map((s) => h('li', { class: stepState(s) === 'not set' ? '' : stepState(s) === 'skipped' ? 'skipped' : 'set' }, `${s.name}: ${stepState(s)}`)))),
       h('div', { class: 'row' },
-        h('button', { onclick: startTeach }, 'Re-teach fields'),
+        h('button', { onclick: startTeach }, 'Re-teach'),
         h('button', {
           class: 'secondary',
           onclick: () => {
-            if (!confirm('Forget the taught fields and which entries were marked as saved?')) return;
-            config = { fields: {}, dateFormat: 'MM/DD/YYYY' };
+            if (!confirm('Forget what the helper learned and which entries were marked as saved?')) return;
+            config = freshConfig();
             done = new Set();
             save(localStorage, CONFIG_KEY, null);
             save(localStorage, DONE_KEY, null);
@@ -611,72 +776,88 @@
     ];
   }
 
-  // --- Teach mode ------------------------------------------------------------------
+  // --- Teach mode: watch the user's real clicks ------------------------------------------
+
+  const watched = new WeakSet();
+  let watchTimer = null;
+
+  // Attach to every document, including an entry window that opens mid-way.
+  function watchDocs() {
+    for (const d of docs()) {
+      if (watched.has(d)) continue;
+      watched.add(d);
+      d.addEventListener('pointerdown', onTeachPointer, true);
+    }
+  }
+
+  let configBeforeTeach = null;
 
   function startTeach() {
     view = 'teach';
     teachStep = 0;
     status = null;
-    document.addEventListener('mouseover', onTeachHover, true);
-    for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click']) document.addEventListener(t, onTeachClick, true);
+    configBeforeTeach = config;
+    config = { ...freshConfig(), dateFormat: config.dateFormat };
+    watchDocs();
+    clearInterval(watchTimer);
+    watchTimer = setInterval(watchDocs, 300);
     render();
   }
 
-  function endTeach() {
-    document.removeEventListener('mouseover', onTeachHover, true);
-    for (const t of ['pointerdown', 'mousedown', 'mouseup', 'click']) document.removeEventListener(t, onTeachClick, true);
-    highlight.style.display = 'none';
+  function endTeach(message) {
+    clearInterval(watchTimer);
+    for (const d of docs()) d.removeEventListener('pointerdown', onTeachPointer, true);
     view = 'main';
+    saveConfig();
+    status = message || null;
     render();
   }
 
-  function onTeachHover(e) {
-    if (e.composedPath().includes(host)) return;
-    const el = controlFor(e.target, FIELDS[teachStep].kind);
-    const r = el.getBoundingClientRect();
-    Object.assign(highlight.style, { display: 'block', left: `${r.left - 3}px`, top: `${r.top - 3}px`, width: `${r.width + 6}px`, height: `${r.height + 6}px` });
-  }
-
-  function onTeachClick(e) {
-    if (e.composedPath().includes(host)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-    if (e.type !== 'click') return;
-    const field = FIELDS[teachStep];
-    const el = controlFor(e.target, field.kind);
-    config.fields[field.key] = describe(el, field.kind);
-    save(localStorage, CONFIG_KEY, config);
-    nextTeachStep();
+  function onTeachPointer(e) {
+    if (view !== 'teach' || e.composedPath().includes(host)) return;
+    const step = STEPS[teachStep];
+    const el = controlFor(e.target, step.kind);
+    if (step.kind === 'result') config.fields[step.key] = rowSignature(el);
+    else config.fields[step.key] = describe(el, step.kind);
+    if (step.key === 'matterGo') config.matterGoMode = 'button';
+    saveConfig();
+    // Let iTK handle the click first, then move on.
+    setTimeout(nextTeachStep, 0);
   }
 
   function nextTeachStep() {
     teachStep++;
-    if (teachStep >= FIELDS.length) {
-      endTeach();
-      status = { kind: 'ok', text: 'Got it. The helper now knows where iTimeKeep\'s fields are.' };
-      render();
+    if (teachStep >= STEPS.length) {
+      endTeach({ kind: 'ok', text: 'Got it. Now close that practice entry in iTimeKeep without saving it.' });
     } else {
       render();
     }
   }
 
+  function skipStep(mode) {
+    const step = STEPS[teachStep];
+    delete config.fields[step.key];
+    if (step.key === 'matterGo') config.matterGoMode = mode || 'auto';
+    saveConfig();
+    nextTeachStep();
+  }
+
   function renderTeach() {
-    const field = FIELDS[teachStep];
+    const step = STEPS[teachStep];
     return [
-      h('div', {}, h('b', {}, `Click ${field.label} in iTimeKeep.`)),
-      field.key === 'newEntry'
-        ? h('div', { class: 'muted' }, 'This lets the helper open a fresh entry each time. It won\'t click anything else for you, and never Save.')
-        : h('div', { class: 'muted' }, 'Clicks are captured, not passed to iTK, while you teach.'),
-      h('ol', { class: 'steps' }, FIELDS.map((f, i) => h('li', { class: i === teachStep ? 'now' : i < teachStep && config.fields[f.key] ? 'set' : '' }, f.label))),
+      h('div', { class: 'prompt' }, step.prompt),
+      step.hint ? h('div', { class: 'muted' }, step.hint) : null,
+      h('ol', { class: 'steps' }, STEPS.map((s, i) => h('li', {
+        class: i === teachStep ? 'now' : i < teachStep ? (config.fields[s.key] || (s.key === 'matterGo' && config.matterGoMode !== 'button') ? 'set' : 'skipped') : '',
+      }, s.name))),
       h('div', { class: 'row' },
-        field.optional ? h('button', { class: 'secondary', onclick: () => { delete config.fields[field.key]; save(localStorage, CONFIG_KEY, config); nextTeachStep(); } },
-          field.key === 'newEntry' ? 'Skip (I\'ll open entries myself)' : 'Skip (iTK fills it in)') : null,
-        h('button', { class: 'secondary', onclick: endTeach }, 'Cancel')),
+        step.alt ? h('button', { class: 'secondary', onclick: () => skipStep(step.alt.mode) }, step.alt.label) : null,
+        step.optional ? h('button', { class: 'secondary', onclick: () => skipStep() }, step.skip) : null,
+        h('button', { class: 'link', onclick: () => { config = configBeforeTeach || config; endTeach({ kind: 'info', text: 'Teaching cancelled. Nothing was changed.' }); } }, 'Cancel')),
     ];
   }
 
-  // --- Panel behavior ----------------------------------------------------------------
+  // --- Panel behavior --------------------------------------------------------------------------
 
   function makeDraggable(handle) {
     handle.addEventListener('pointerdown', (e) => {
@@ -699,7 +880,10 @@
   function toggle(show) {
     const visible = show == null ? host.style.display === 'none' : show;
     host.style.display = visible ? '' : 'none';
-    if (!visible && view === 'teach') endTeach();
+    if (!visible && view === 'teach') {
+      config = configBeforeTeach || config;
+      endTeach();
+    }
   }
 
   window.__timeLoggerItk = { toggle: () => toggle() };
