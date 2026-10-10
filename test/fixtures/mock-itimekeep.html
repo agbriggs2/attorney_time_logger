@@ -9,6 +9,8 @@
      - the matter can't be typed: click the matter field to open a lookup,
        type in its search box, click Search (or press Enter), wait for
        results, then click a result row
+     - ?shadow=1 puts the search input inside a web component (shadow DOM);
+       ?wrapper=1 puts it inside a padded role=combobox wrapper
      - a "recent entries" table on the page also shows matter numbers
      - choosing a matter resets the date to today
      - Save counts clicks so tests can prove the helper never saves -->
@@ -68,7 +70,10 @@
     app.innerHTML = '';
     const newBtn = document.createElement('button'); newBtn.textContent = 'New Time Entry'; newBtn.id = 'btn_' + (uid++);
     newBtn.addEventListener('click', () => {
-      if (params.has('popup')) window.open('?entry=1', 'itkEntry', 'width=640,height=720');
+      if (params.has('popup')) {
+        const q = new URLSearchParams(params); q.delete('popup'); q.set('entry', '1');
+        window.open(`?${q}`, 'itkEntry', 'width=640,height=720');
+      }
       else openDialog();
     });
     const recent = document.createElement('table');
@@ -115,7 +120,19 @@
     };
     go.addEventListener('click', runSearch);
     search.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(); });
-    lookup.append(search, go, results);
+    // Variants seen in real apps: the search input inside a web component's
+    // shadow DOM (?shadow=1), or inside a padded role=combobox wrapper (?wrapper=1).
+    let searchHolder = search;
+    if (params.has('shadow')) {
+      searchHolder = document.createElement('itk-searchbox');
+      searchHolder.attachShadow({ mode: 'open' }).append(search);
+    } else if (params.has('wrapper')) {
+      searchHolder = document.createElement('div');
+      searchHolder.setAttribute('role', 'combobox'); searchHolder.className = 'search-wrap';
+      searchHolder.style.cssText = 'display:inline-block;padding:10px;border:1px solid #999;';
+      searchHolder.append(search);
+    }
+    lookup.append(searchHolder, go, results);
     matter.addEventListener('click', () => { lookup.hidden = false; search.focus(); });
 
     const hours = document.createElement('input'); hours.id = 'input_' + (uid++);

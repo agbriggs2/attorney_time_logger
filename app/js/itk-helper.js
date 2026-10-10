@@ -22,7 +22,7 @@
 
   // Bump when the helper changes, so a newer favorite replaces an older copy
   // still running in this tab instead of just showing it again.
-  const HELPER_VERSION = 4;
+  const HELPER_VERSION = 5;
 
   const existing = window.__timeLoggerItk;
   if (existing && existing.version === HELPER_VERSION) {
@@ -152,6 +152,74 @@
 
   const viewOf = (el) => el.ownerDocument.defaultView;
 
+  // Pages built from web components keep their inputs inside "shadow roots",
+  // which ordinary queries can't see. These helpers search inside them too.
+  const rootCache = new Map();
+  function rootsOf(d) {
+    const hit = rootCache.get(d);
+    if (hit && Date.now() - hit.t < 250) return hit.roots;
+    const roots = [d];
+    const walk = (root) => {
+      const it = d.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      for (let n = it.nextNode(); n; n = it.nextNode()) {
+        if (n.shadowRoot && n !== host) {
+          roots.push(n.shadowRoot);
+          walk(n.shadowRoot);
+        }
+      }
+    };
+    walk(d);
+    rootCache.set(d, { t: Date.now(), roots });
+    return roots;
+  }
+  const queryAll = (d, sel) => rootsOf(d).flatMap((r) => [...r.querySelectorAll(sel)]);
+  function getById(d, id) {
+    for (const r of rootsOf(d)) {
+      const el = r.getElementById(id);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  // What can actually be typed into. iTK may hand us a wrapper or a web
+  // component instead; look inside it for the real text box.
+  const TYPABLE = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]), textarea, select, [contenteditable=""], [contenteditable=true]';
+  const isTypable = (el) => !!el && (el.matches('input, textarea, select') || el.isContentEditable);
+  function typableIn(el) {
+    if (!el) return null;
+    if (isTypable(el)) return el;
+    const scopes = [el.shadowRoot, el].filter(Boolean);
+    for (const scope of scopes) {
+      const found = [...scope.querySelectorAll(TYPABLE)].filter(isVisible);
+      if (found.length) return found[0];
+      for (const child of scope.querySelectorAll('*')) {
+        if (child.shadowRoot) {
+          const inner = typableIn(child);
+          if (inner && inner !== child) return inner;
+        }
+      }
+    }
+    return null;
+  }
+  function deepActive(d) {
+    let a = d.activeElement;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    return a;
+  }
+
+  // A short, data-free description of an element, for error messages.
+  function describeShort(el) {
+    if (!el) return 'nothing';
+    const bits = [el.tagName.toLowerCase()];
+    for (const a of ['role', 'type']) if (el.getAttribute(a)) bits.push(`${a}=${el.getAttribute(a)}`);
+    const cls = [...el.classList].slice(0, 3).join('.');
+    if (cls) bits.push(`.${cls}`);
+    if (el.isContentEditable) bits.push('contenteditable');
+    if (el.getRootNode() instanceof viewOf(el).ShadowRoot) bits.push('inside a web component');
+    if (el.ownerDocument !== document) bits.push('in another window/frame');
+    return bits.join(' ');
+  }
+
   // --- Finding iTK's controls -------------------------------------------------------
 
   const CONTROL = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select, [contenteditable=""], [contenteditable=true], [role=combobox], [role=textbox], [role=searchbox]';
@@ -174,6 +242,8 @@
   function controlFor(el, kind) {
     if (kind === 'button') return el.closest(BUTTON) || el;
     if (kind === 'result') return el.closest(ROW) || el.closest('[class*="item" i], [class*="row" i], [class*="result" i], [class*="option" i]') || el;
+    const real = typableIn(el);
+    if (real) return real;
     if (el.matches(CONTROL)) return el;
     const inside = [...el.querySelectorAll(CONTROL)].filter(isVisible);
     if (inside.length === 1) return inside[0];
@@ -185,14 +255,14 @@
   }
 
   function labelFor(el) {
-    const d = el.ownerDocument;
-    if (el.id) {
+    const d = el.getRootNode();
+    if (el.id && d.querySelector) {
       const l = d.querySelector(`label[for="${CSS.escape(el.id)}"]`);
       if (l) return norm(l.textContent);
     }
     const by = el.getAttribute('aria-labelledby');
     if (by) {
-      const t = by.split(/\s+/).map((id) => d.getElementById(id)).filter(Boolean).map((n) => n.textContent).join(' ');
+      const t = by.split(/\s+/).map((id) => d.getElementById && d.getElementById(id)).filter(Boolean).map((n) => n.textContent).join(' ');
       if (norm(t)) return norm(t);
     }
     const wrap = el.closest('label');
@@ -264,18 +334,18 @@
 
   function findIn(d, desc) {
     if (desc.id) {
-      const el = d.getElementById(desc.id);
+      const el = getById(d, desc.id);
       if (isVisible(el)) return el;
     }
     for (const [a, v] of Object.entries(desc.attrs || {})) {
       if (a === 'type') continue;
-      const el = uniqueVisible(d.querySelectorAll(`${desc.tag}[${a}="${CSS.escape(v)}"]`));
+      const el = uniqueVisible(queryAll(d, `${desc.tag}[${a}="${CSS.escape(v)}"]`));
       if (el) return el;
     }
     if (desc.label) {
-      const labels = [...d.querySelectorAll('label, [class*="label" i]')].filter((l) => norm(l.textContent) === desc.label && isVisible(l));
+      const labels = queryAll(d, 'label, [class*="label" i]').filter((l) => norm(l.textContent) === desc.label && isVisible(l));
       for (const l of labels) {
-        const el = l.control || (l.htmlFor && d.getElementById(l.htmlFor));
+        const el = l.control || (l.htmlFor && getById(d, l.htmlFor));
         if (isVisible(el)) return el;
         for (let p = l.parentElement, depth = 0; p && depth < 3; p = p.parentElement, depth++) {
           const c = uniqueVisible(p.querySelectorAll(desc.tag));
@@ -284,20 +354,22 @@
       }
     }
     if (desc.text) {
-      const el = uniqueVisible([...d.querySelectorAll(`${desc.tag}, [role=button]`)].filter((b) => norm(b.textContent) === desc.text));
+      const el = uniqueVisible(queryAll(d, `${desc.tag}, [role=button]`).filter((b) => norm(b.textContent) === desc.text));
       if (el) return el;
     }
     if (desc.icon) {
-      const el = uniqueVisible([...d.querySelectorAll(desc.tag)].filter((b) => {
+      const el = uniqueVisible(queryAll(d, desc.tag).filter((b) => {
         const i = b.querySelector('[class*="icon" i], [class*="fa-" i], svg[data-icon], i[class]');
         return i && ((i.getAttribute('data-icon') || [...i.classList].filter((c) => /fa-|icon-/.test(c)).join(' ')) === desc.icon);
       }));
       if (el) return el;
     }
-    try {
-      const el = d.querySelector(desc.path);
-      if (isVisible(el)) return el;
-    } catch { /* bad selector */ }
+    for (const r of rootsOf(d)) {
+      try {
+        const el = r.querySelector(desc.path);
+        if (isVisible(el)) return el;
+      } catch { /* bad selector */ }
+    }
     return null;
   }
 
@@ -321,14 +393,29 @@
 
   // --- Typing and clicking like a person -----------------------------------------------
 
-  const valueOf = (el) => (el.isContentEditable ? el.textContent : el.value);
+  const valueOf = (el) => (!el ? '' : el.isContentEditable ? el.textContent : el.value != null ? el.value : el.textContent);
 
+  // Set a value the way the browser itself would, bypassing any override a
+  // framework put on the element, so the framework notices the change.
   function nativeSet(el, value) {
-    const W = viewOf(el);
-    const proto = el instanceof W.HTMLTextAreaElement ? W.HTMLTextAreaElement.prototype
-      : el instanceof W.HTMLSelectElement ? W.HTMLSelectElement.prototype : W.HTMLInputElement.prototype;
-    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+    if (el.isContentEditable) {
+      el.textContent = value;
+      return;
+    }
+    for (let p = Object.getPrototypeOf(el); p; p = Object.getPrototypeOf(p)) {
+      const d = Object.getOwnPropertyDescriptor(p, 'value');
+      if (d && d.set) {
+        try {
+          d.set.call(el, value);
+          return;
+        } catch {
+          break;
+        }
+      }
+    }
+    el.value = value;
   }
+
 
   function fire(el, Type, type, init) {
     const W = viewOf(el);
@@ -362,30 +449,50 @@
 
   // Types text with key events, one character at a time for search boxes, or
   // all at once for long text like the narrative.
-  async function typeInto(el, text, { perChar = false } = {}) {
-    if (el.tagName === 'SELECT') {
-      const opt = [...el.options].find((o) => low(o.textContent).includes(low(text)) || o.value === text);
-      if (!opt) return false;
-      nativeSet(el, opt.value);
-      fire(el, 'Event', 'change');
-      return true;
+  // Finds the real text box (clicking a wrapper if needed), then types into
+  // it. Returns the element typed into, or null if there was nothing typable.
+  async function resolveTypable(el) {
+    let target = typableIn(el);
+    if (!target) {
+      click(el);
+      await sleep(250);
+      const a = deepActive(el.ownerDocument);
+      target = isTypable(a) ? a : typableIn(el);
     }
-    if (el.readOnly || el.disabled) return false;
-    const d = el.ownerDocument;
-    clearField(el);
+    return target;
+  }
+
+  async function typeInto(el, text, { perChar = false } = {}) {
+    const target = await resolveTypable(el);
+    if (!target) throw new Error(`there's no text box to type into (found ${describeShort(el)})`);
+    if (target.tagName === 'SELECT') {
+      const opt = [...target.options].find((o) => low(o.textContent).includes(low(text)) || o.value === text);
+      if (!opt) return null;
+      nativeSet(target, opt.value);
+      fire(target, 'Event', 'change');
+      return target;
+    }
+    if (target.readOnly || target.disabled) return null;
+    const d = target.ownerDocument;
+    clearField(target);
     for (const chunk of perChar ? [...text] : [text]) {
-      keyEvent(el, 'keydown', chunk);
-      const before = valueOf(el);
-      if (!d.execCommand('insertText', false, chunk) || valueOf(el) === before) {
-        nativeSet(el, before + chunk);
-        fire(el, 'InputEvent', 'input', { data: chunk, inputType: 'insertText' });
+      keyEvent(target, 'keydown', chunk);
+      const before = valueOf(target);
+      let inserted = false;
+      try {
+        inserted = d.execCommand('insertText', false, chunk) && valueOf(target) !== before;
+      } catch { /* fall back below */ }
+      if (!inserted) {
+        nativeSet(target, before + chunk);
+        fire(target, 'InputEvent', 'input', { data: chunk, inputType: 'insertText' });
       }
-      keyEvent(el, 'keyup', chunk);
+      keyEvent(target, 'keyup', chunk);
       if (perChar) await sleep(35);
     }
-    fire(el, 'Event', 'change');
-    return true;
+    fire(target, 'Event', 'change');
+    return target;
   }
+
 
   function pressEnter(el) {
     keyEvent(el, 'keydown', 'Enter');
@@ -417,8 +524,8 @@
     const learned = sig ? rowSelector(sig) : null;
     const out = [];
     for (const d of docs()) {
-      if (learned) for (const el of d.querySelectorAll(learned)) out.push({ el, learned: true });
-      for (const el of d.querySelectorAll(GENERIC_ROW)) out.push({ el, learned: false });
+      if (learned) for (const el of queryAll(d, learned)) out.push({ el, learned: true });
+      for (const el of queryAll(d, GENERIC_ROW)) out.push({ el, learned: false });
     }
     return out.filter((c) => isVisible(c.el) && !inPanel(c.el));
   }
@@ -472,6 +579,14 @@
     const f = config.fields;
     const checks = [];
     const note = (ok, text) => checks.push({ ok, text });
+    // Each step is separate: if one fails, say why and carry on with the rest.
+    const step = async (name, fn) => {
+      try {
+        await fn();
+      } catch (err) {
+        note(false, `${name}: ${err && err.message ? err.message : err}. Please do this step yourself.`);
+      }
+    };
 
     if (f.newEntry) {
       const btn = find(f.newEntry);
@@ -485,73 +600,98 @@
     }
 
     // Date
-    let dateEl = f.date ? find(f.date) : null;
+    let dateBox = null;
     let wantedDate = null;
     const fillDate = async () => {
-      dateEl = (f.date && find(f.date)) || dateEl;
-      if (!dateEl) return false;
-      wantedDate = formatDate(entry.date, config.dateFormat, dateEl);
-      if (!(await typeInto(dateEl, wantedDate))) return false;
-      blur(dateEl);
-      return true;
+      const el = find(f.date);
+      if (!el) throw new Error('field not found');
+      wantedDate = formatDate(entry.date, config.dateFormat, typableIn(el) || el);
+      dateBox = await typeInto(el, wantedDate);
+      if (!dateBox) throw new Error(`the field is locked; set it to ${wantedDate}`);
+      blur(dateBox);
     };
-    const dateTyped = f.date ? await fillDate() : false;
+    if (f.date) await step('Date', fillDate);
 
     // Matter: open the list, search for the number, click the result.
-    const before = new Set(rowCandidates().map((c) => c.el));
-    let matterOk = false;
-    if (f.matterOpen) {
-      const opener = await waitFor(f.matterOpen);
-      if (opener) click(opener);
-    }
-    const search = await waitFor(f.matterSearch);
-    if (!search) {
-      note(false, `Matter: couldn't find the search box. Look up ${entry.matterNumber} yourself.`);
-    } else {
-      await typeInto(search, entry.matterNumber, { perChar: true });
-      if (config.matterGoMode === 'enter') pressEnter(search);
+    await step('Matter', async () => {
+      const before = new Set(rowCandidates().map((c) => c.el));
+      if (f.matterOpen) {
+        const opener = await waitFor(f.matterOpen);
+        if (!opener) throw new Error("couldn't find what opens the matter list");
+        click(opener);
+      }
+      const search = await waitFor(f.matterSearch);
+      if (!search) throw new Error(`couldn't find the search box; look up ${entry.matterNumber}`);
+      const box = await typeInto(search, entry.matterNumber, { perChar: true });
+      if (!box) throw new Error(`the search box is locked; look up ${entry.matterNumber}`);
+      if (config.matterGoMode === 'enter') pressEnter(box);
       else if (config.matterGoMode === 'button' && f.matterGo) {
         const go = await waitFor(f.matterGo, 2000);
-        if (go) click(go);
-        else note(false, "Matter: couldn't find the Search button.");
+        if (!go) throw new Error("couldn't find the Search button");
+        click(go);
       }
       const result = await pickResult(entry.matterNumber, before);
-      matterOk = result === 'picked';
-      if (matterOk) note(true, `Matter: picked ${entry.matterNumber}`);
+      if (result === 'picked') note(true, `Matter: picked ${entry.matterNumber}`);
       else if (result === 'ambiguous') note(false, `Matter: more than one result shows ${entry.matterNumber}. Click the right one.`);
       else note(false, `Matter: ${entry.matterNumber} didn't appear in the results. Look it up yourself.`);
-    }
+    });
     await sleep(700); // iTK may reload defaults after a matter is chosen
 
     // Hours and narrative
-    const hours = await waitFor(f.hours, 2000);
-    if (hours && (await typeInto(hours, entry.hours))) {
-      blur(hours);
-      const v = valueOf(hours);
+    await step('Hours', async () => {
+      const el = await waitFor(f.hours, 2000);
+      if (!el) throw new Error('field not found');
+      const box = await typeInto(el, entry.hours);
+      if (!box) throw new Error('the field is locked');
+      blur(box);
+      const v = valueOf(box);
       note(norm(v) === entry.hours || parseFloat(v) === parseFloat(entry.hours), `Hours: ${entry.hours}`);
-    } else {
-      note(false, 'Hours: field not found or locked. Enter it yourself.');
-    }
+    });
 
-    const narrative = await waitFor(f.narrative, 2000);
-    if (narrative && (await typeInto(narrative, entry.narrative))) {
-      blur(narrative);
-      note(norm(valueOf(narrative)) === norm(entry.narrative), 'Narrative filled');
-    } else if (entry.narrative) {
-      note(false, 'Narrative: field not found or locked. Paste it yourself.');
+    if (entry.narrative) {
+      await step('Narrative', async () => {
+        const el = await waitFor(f.narrative, 2000);
+        if (!el) throw new Error('field not found');
+        const box = await typeInto(el, entry.narrative);
+        if (!box) throw new Error('the field is locked');
+        blur(box);
+        note(norm(valueOf(box)) === norm(entry.narrative), 'Narrative filled');
+      });
     }
 
     // Choosing a matter can reset the date; put it back once if so.
-    if (f.date) {
-      if (!dateTyped) {
-        note(false, `Date: couldn't type into the date field. Set it to ${formatDate(entry.date, config.dateFormat)} yourself.`);
-      } else {
-        const el = find(f.date) || dateEl;
-        if (low(valueOf(el)) !== low(wantedDate)) await fillDate();
-        note(low(valueOf(find(f.date) || el)) === low(wantedDate), `Date: ${wantedDate}`);
-      }
+    if (f.date && dateBox) {
+      await step('Date', async () => {
+        const now = typableIn(find(f.date)) || dateBox;
+        if (low(valueOf(now)) !== low(wantedDate)) await fillDate();
+        note(low(valueOf(typableIn(find(f.date)) || dateBox)) === low(wantedDate), `Date: ${wantedDate}`);
+      });
     }
     return checks;
+  }
+
+  // Structure of the taught controls (never their contents), to help
+  // troubleshoot a page the helper doesn't handle yet.
+  function diagnostics() {
+    const lines = [`Time Logger iTK helper v${HELPER_VERSION}`, `Browser: ${navigator.userAgent}`,
+      `Windows/frames found: ${docs().length}; web component roots on this page: ${rootsOf(document).length - 1}`,
+      `Search mode: ${config.matterGoMode}; date format: ${config.dateFormat}`];
+    for (const s of STEPS) {
+      const d = config.fields[s.key];
+      if (!d) {
+        lines.push(`${s.name}: not taught`);
+        continue;
+      }
+      if (s.kind === 'result') {
+        lines.push(`${s.name}: rows like ${rowSelector(d)} (${rowCandidates().filter((c) => c.learned).length} on screen now)`);
+        continue;
+      }
+      const el = find(d);
+      const real = el && typableIn(el);
+      lines.push(`${s.name}: learned {tag:${d.tag}, label:${d.label || '-'}, attrs:${Object.keys(d.attrs || {}).join('/') || '-'}, path:${d.path}}`
+        + ` → now ${el ? describeShort(el) : 'not found'}${s.kind === 'field' && el ? `; text box: ${real ? describeShort(real) : 'none'}` : ''}`);
+    }
+    return lines.join('\n');
   }
 
   // --- Panel UI -----------------------------------------------------------------------------
@@ -766,6 +906,7 @@
   }
 
   let confirmingForget = false;
+  let showDiagnostics = '';
 
   // Clears what was learned and which entries were marked saved, and any
   // teaching in progress, so the next Start begins from scratch.
@@ -806,6 +947,18 @@
             h('button', { class: 'secondary', onclick: () => { confirmingForget = false; render(); } }, 'No')]
           : h('button', { class: 'secondary', onclick: () => { confirmingForget = true; render(); } }, 'Forget everything')),
       h('div', { class: 'row' }, h('button', { class: 'secondary', onclick: () => { view = 'main'; render(); } }, 'Done')),
+      h('div', { class: 'row' }, h('button', {
+        class: 'secondary',
+        title: 'Copies how iTK\'s fields are built (no client data) so they can be sent for troubleshooting',
+        onclick: () => {
+          const text = diagnostics();
+          showDiagnostics = text;
+          render();
+          try { navigator.clipboard.writeText(text); } catch { /* shown below to copy by hand */ }
+        },
+      }, 'Copy troubleshooting details')),
+      h('div', { class: 'muted' }, 'For the most useful details, open a blank time entry (and the matter search) first.'),
+      showDiagnostics ? h('textarea', { readonly: true, onfocus: (e) => e.target.select() }, showDiagnostics) : null,
       h('div', { class: 'muted' }, `Helper version ${HELPER_VERSION}`),
     ];
   }
@@ -853,7 +1006,7 @@
   function onTeachPointer(e) {
     if (view !== 'teach' || e.composedPath().includes(host)) return;
     const step = STEPS[teachStep];
-    const el = controlFor(e.target, step.kind);
+    const el = controlFor(e.composedPath()[0] || e.target, step.kind);
     if (step.kind === 'result') config.fields[step.key] = rowSignature(el);
     else config.fields[step.key] = describe(el, step.kind);
     if (step.key === 'matterGo') config.matterGoMode = 'button';
