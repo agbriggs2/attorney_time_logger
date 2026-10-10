@@ -325,15 +325,27 @@ body.pip { margin: 0; padding: 8px; }
 }
 .now.stopped { border-left: 4px solid var(--danger); }
 .now.stopped .now-label { color: var(--danger); }
-.pip-desc {
-  font-size: 13px;
-  line-height: 1.35;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+.pip-narrative {
+  width: 100%;
+  resize: none;
+  font: 13px/1.35 inherit;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 7px;
 }
-.pip-desc.empty { color: var(--muted); font-style: italic; }
+.pip-size {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  padding: 0 7px;
+  font-size: 14px;
+  line-height: 20px;
+}
+body.pip.compact { padding: 6px 8px; }
+body.pip.compact .pip-clock { font-size: 16px; }
 .small-print { font-size: 12px; margin: 10px 0 0; }
 
 /* iTimeKeep helper */

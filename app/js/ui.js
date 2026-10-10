@@ -401,8 +401,12 @@ function entryForm({ matterId, start, end, description, isRunning }, onSave) {
     class: 'entry-form',
     onsubmit: async (ev) => {
       ev.preventDefault();
-      const payload = { matterId: sel.value, start: T.parseClockOnDay(key, s.value), description: d.value };
-      if (e) payload.end = T.parseClockOnDay(key, e.value);
+      // Keep the exact (to-the-second) time unless the user changed the
+      // minutes shown; re-saving rounded times would shift entries.
+      const timeFrom = (input, original) => (original != null && input.value === T.timeInputValue(original)
+        ? original : T.parseClockOnDay(key, input.value));
+      const payload = { matterId: sel.value, start: timeFrom(s, start), description: d.value };
+      if (e) payload.end = timeFrom(e, end);
       if ((await onSave(payload)) !== FAILED) closeDayForm();
     },
     onkeydown: (ev) => { if (ev.key === 'Escape') closeDayForm(); },

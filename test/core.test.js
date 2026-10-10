@@ -190,3 +190,26 @@ test('iTimeKeep export uses combined lines and flags matters without a number', 
   }]);
   assert.deepEqual(missing, ['Non-client — Administrative']);
 });
+
+test('back-to-back entries: overlaps up to a minute snap together', () => {
+  const { state, a, b } = setup();
+  const first = S.addEntry(state, { matterId: a.id, start: at('13:55'), end: at('14:00') + 37000 }, at('16:00'));
+  // typed 2:00, but the previous entry ran to 2:00:37
+  const second = S.addEntry(state, { matterId: b.id, start: at('14:00'), end: at('14:15') }, at('16:00'));
+  assert.equal(second.start, first.end);
+  // a timer stopped at 3:00:20; the next entry is typed as starting 3:00 and is added first
+  const later = S.addEntry(state, { matterId: a.id, start: at('15:00') + 20000, end: at('15:30') }, at('16:00'));
+  const between = S.addEntry(state, { matterId: b.id, start: at('14:15'), end: at('15:00') + 50000 }, at('16:00'));
+  assert.equal(between.end, later.start);
+  assert.equal(state.entries.length, 4);
+});
+
+test('editing an entry keeps snapping, and real overlaps are still rejected', () => {
+  const { state, a, b } = setup();
+  S.addEntry(state, { matterId: a.id, start: at('13:00'), end: at('14:00') + 30000 }, at('16:00'));
+  const run = S.startTimer(state, b.id, at('14:00') + 30000);
+  S.setRunningStart(state, at('14:00'), at('14:30')); // 30s into the previous entry
+  assert.equal(run.start, at('14:00') + 30000);
+  assert.throws(() => S.setRunningStart(state, at('13:58'), at('14:30')), /Overlaps/);
+  assert.throws(() => S.addEntry(state, { matterId: b.id, start: at('13:30'), end: at('13:45') }, at('16:00')), /Overlaps/);
+});

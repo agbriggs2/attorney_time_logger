@@ -19,7 +19,7 @@ GitHub only hosts the app's code.
 | **Forgetting to stop a timer** | If you step away (no keyboard or mouse use for 5 minutes, screen locked, PC asleep, or browser closed) while a timer runs, it asks when you return: remove the away time, stop the timer as of when you left, keep it (you were on a call), or log it to a different matter. |
 | **Reconstructing the day** | The Day view shows a timeline with **untracked gaps**. Click **Log this time** on a gap to assign it to a matter. At the end of the workday you get a "Review your day" prompt. |
 | **Interruptions** | **Interrupt** (or <kbd>Shift</kbd>+<kbd>Enter</kbd>) pauses the current matter and times the interruption; **Back to it** resumes the original matter with its description. |
-| **Keeping the timer in view** | **Pop out timer** opens a small window that stays on top of Word and Outlook, with Stop and a matter switcher. |
+| **Keeping the timer in view** | **Pop out timer** opens a small window that stays on top of Word and Outlook, where you can edit the narrative, stop, or switch matters. The **–** button minimizes it to just the matter and clock. |
 
 ### Billing rules
 - Time is rounded **up** to the billing increment (0.1 hr by default; 0.25 available).

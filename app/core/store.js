@@ -4,6 +4,7 @@ import * as T from './time.js';
 import { matterLabel } from './report.js';
 
 export const MIN_ENTRY_MS = T.MINUTE; // stopped entries shorter than this (with no description) are dropped
+const OVERLAP_GRACE_MS = T.MINUTE; // overlaps this small are trimmed instead of rejected
 const MAX_INTERRUPTS = 5;
 
 export const DEFAULT_SETTINGS = {
@@ -79,14 +80,32 @@ function findOverlap(state, start, end, exceptId, now) {
   return state.entries.find((e) => e.id !== exceptId && start < (e.end == null ? now : e.end) && e.start < stop) || null;
 }
 
+// Back-to-back entries are normal (1:55–2:00, 2:00–2:15). Times typed in
+// whole minutes rarely line up with timers that ran to the second, so an
+// overlap of up to a minute is trimmed to make the entries meet exactly.
+function snapToNeighbors(state, entry, now) {
+  for (const o of state.entries) {
+    if (o.id === entry.id) continue;
+    const oEnd = o.end == null ? now : o.end;
+    const eEnd = entry.end == null ? now : entry.end;
+    if (!(entry.start < oEnd && o.start < eEnd)) continue;
+    if (o.end != null && entry.start >= o.start && oEnd - entry.start <= OVERLAP_GRACE_MS) {
+      entry.start = oEnd; // starts just before the other one ends
+    } else if (entry.end != null && entry.end <= oEnd && entry.end - o.start <= OVERLAP_GRACE_MS) {
+      entry.end = o.start; // ends just after the other one starts
+    }
+  }
+}
+
 function validateTimes(state, entry, now) {
   if (!Number.isFinite(entry.start)) throw new Error('Enter a valid start time.');
   if (entry.start > now) throw new Error('Start time is in the future.');
   if (entry.end != null) {
     if (!Number.isFinite(entry.end)) throw new Error('Enter a valid end time.');
-    if (entry.end <= entry.start) throw new Error('End time must be after the start time.');
     if (entry.end > now) throw new Error('End time is in the future.');
   }
+  snapToNeighbors(state, entry, now);
+  if (entry.end != null && entry.end <= entry.start) throw new Error('End time must be after the start time.');
   const clash = findOverlap(state, entry.start, entry.end, entry.id, now);
   if (clash) {
     const end = clash.end == null ? 'now' : T.formatClock(clash.end);
