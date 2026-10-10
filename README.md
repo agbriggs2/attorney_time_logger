@@ -51,7 +51,7 @@ never saves anything; you check each entry and click iTK's own **Save**.
    and type any matter number, click Search (or tell it you press Enter),
    click the matter in the results, then click the Hours and Narrative
    fields. Your clicks work normally while it watches. Close the practice
-   entry without saving.
+   entry without saving. Misclicked? **← Back** redoes the last step.
 5. For each entry, click **Fill in iTimeKeep**. The helper opens a new entry,
    types the date, looks up the matter number and clicks the result showing
    exactly that number, then fills in hours and narrative. Check the entry,

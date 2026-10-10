@@ -22,7 +22,7 @@
 
   // Bump when the helper changes, so a newer favorite replaces an older copy
   // still running in this tab instead of just showing it again.
-  const HELPER_VERSION = 3;
+  const HELPER_VERSION = 4;
 
   const existing = window.__timeLoggerItk;
   if (existing && existing.version === HELPER_VERSION) {
@@ -574,6 +574,7 @@
     button { font: inherit; border-radius: 7px; border: 1px solid transparent; background: #2563eb; color: #fff;
       padding: 6px 12px; cursor: pointer; }
     button.secondary { background: #fff; color: #1c2330; border-color: #d5d9e0; }
+    button.danger { background: #c02626; }
     button.link { background: none; color: #2563eb; padding: 2px 0; border: 0; }
     button:disabled { opacity: .5; cursor: default; }
     textarea { width: 100%; min-height: 70px; font: 12px/1.4 Consolas, monospace; border: 1px solid #d5d9e0;
@@ -764,6 +765,28 @@
     return config.fields[s.key] ? 'set' : s.optional ? 'skipped' : 'not set';
   }
 
+  let confirmingForget = false;
+
+  // Clears what was learned and which entries were marked saved, and any
+  // teaching in progress, so the next Start begins from scratch.
+  function forgetEverything() {
+    if (view === 'teach' || watchTimer) {
+      clearInterval(watchTimer);
+      watchTimer = null;
+      for (const d of docs()) d.removeEventListener('pointerdown', onTeachPointer, true);
+      watched = new WeakSet();
+    }
+    config = freshConfig();
+    configBeforeTeach = null;
+    done = new Set();
+    save(localStorage, CONFIG_KEY, null);
+    save(localStorage, DONE_KEY, null);
+    confirmingForget = false;
+    view = 'main';
+    status = { kind: 'info', text: 'Everything was forgotten. Click Start to teach the helper again.' };
+    render();
+  }
+
   function renderSettings() {
     const fmt = h('select', { onchange: (ev) => { config.dateFormat = ev.target.value; saveConfig(); } },
       ['MM/DD/YYYY', 'M/D/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD'].map((f) => {
@@ -777,18 +800,11 @@
         STEPS.map((s) => h('li', { class: stepState(s) === 'not set' ? '' : stepState(s) === 'skipped' ? 'skipped' : 'set' }, `${s.name}: ${stepState(s)}`)))),
       h('div', { class: 'row' },
         h('button', { onclick: startTeach }, 'Re-teach'),
-        h('button', {
-          class: 'secondary',
-          onclick: () => {
-            if (!confirm('Forget what the helper learned and which entries were marked as saved?')) return;
-            config = freshConfig();
-            done = new Set();
-            save(localStorage, CONFIG_KEY, null);
-            save(localStorage, DONE_KEY, null);
-            view = 'main';
-            render();
-          },
-        }, 'Forget everything')),
+        confirmingForget
+          ? [h('span', {}, 'Forget everything?'),
+            h('button', { class: 'danger', onclick: forgetEverything }, 'Yes, forget'),
+            h('button', { class: 'secondary', onclick: () => { confirmingForget = false; render(); } }, 'No')]
+          : h('button', { class: 'secondary', onclick: () => { confirmingForget = true; render(); } }, 'Forget everything')),
       h('div', { class: 'row' }, h('button', { class: 'secondary', onclick: () => { view = 'main'; render(); } }, 'Done')),
       h('div', { class: 'muted' }, `Helper version ${HELPER_VERSION}`),
     ];
@@ -796,7 +812,9 @@
 
   // --- Teach mode: watch the user's real clicks ------------------------------------------
 
-  const watched = new WeakSet();
+  // Documents currently being watched. Reset whenever teaching ends, so a
+  // restarted teach attaches its listener again.
+  let watched = new WeakSet();
   let watchTimer = null;
 
   // Attach to every document, including an entry window that opens mid-way.
@@ -825,6 +843,7 @@
   function endTeach(message) {
     clearInterval(watchTimer);
     for (const d of docs()) d.removeEventListener('pointerdown', onTeachPointer, true);
+    watched = new WeakSet();
     view = 'main';
     saveConfig();
     status = message || null;
@@ -852,6 +871,17 @@
     }
   }
 
+  // Undo the last step after a misclick, without starting over.
+  function backStep() {
+    if (teachStep === 0) return;
+    teachStep--;
+    const step = STEPS[teachStep];
+    delete config.fields[step.key];
+    if (step.key === 'matterGo') config.matterGoMode = 'button';
+    saveConfig();
+    render();
+  }
+
   function skipStep(mode) {
     const step = STEPS[teachStep];
     delete config.fields[step.key];
@@ -871,7 +901,9 @@
       h('div', { class: 'row' },
         step.alt ? h('button', { class: 'secondary', onclick: () => skipStep(step.alt.mode) }, step.alt.label) : null,
         step.optional ? h('button', { class: 'secondary', onclick: () => skipStep() }, step.skip) : null,
+        teachStep > 0 ? h('button', { class: 'secondary', title: 'Undo the last step and do it again', onclick: backStep }, '← Back') : null,
         h('button', { class: 'link', onclick: () => { config = configBeforeTeach || config; endTeach({ kind: 'info', text: 'Teaching cancelled. Nothing was changed.' }); } }, 'Cancel')),
+      h('div', { class: 'muted' }, 'Misclicked? Use Back to redo the last step.'),
     ];
   }
 
